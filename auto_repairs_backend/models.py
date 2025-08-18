@@ -1,0 +1,25 @@
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+import uuid
+from django.utils import timezone
+from datetime import timedelta
+
+
+class User(AbstractUser):
+    email = models.EmailField(unique=True)
+    is_email_verified = models.BooleanField(default=False)
+    email_verification_token = models.UUIDField(
+        default=uuid.uuid4, null=True, blank=True)
+    email_verification_sent_at = models.DateTimeField(null=True, blank=True)
+
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['username']
+
+    def __str__(self):
+        return self.email
+
+    def is_verification_token_expired(self):
+        if not self.email_verification_sent_at:
+            return True
+        expiry_time = self.email_verification_sent_at + timedelta(hours=24)
+        return timezone.now() > expiry_time
