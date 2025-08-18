@@ -170,6 +170,23 @@ STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# ====== CORS Settings ======
+# CORS settings for cross-origin requests from frontend
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+CORS_ALLOW_ALL_ORIGINS = DEBUG  # Allow all origins in debug mode for development
+CORS_ALLOW_CREDENTIALS = True  # Allow cookies and auth headers
+CORS_ALLOWED_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
+
 # ====== Email Settings ======
 # For development, use console backend to print emails to console
 if DEBUG:
