@@ -19,6 +19,7 @@ else:
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     password_confirm = serializers.CharField(write_only=True)
+    role = serializers.ChoiceField(choices=User.USER_ROLES, default=User.CUSTOMER)
 
     class Meta:
         model = User
@@ -29,6 +30,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             "password_confirm",
             "first_name",
             "last_name",
+            "role",
         )
 
     def validate(self, attrs):
@@ -39,6 +41,19 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("Email already exists")
+        return value
+
+    def validate_role(self, value):
+        # Only owners can create other owners and employees
+        request = self.context.get("request")
+        if request and hasattr(request, "user") and request.user.is_authenticated:
+            if value in [User.OWNER, User.EMPLOYEE] and not request.user.is_owner:
+                raise serializers.ValidationError(
+                    "Only owners can create owner or employee accounts"
+                )
+        elif value in [User.OWNER, User.EMPLOYEE]:
+            # If no authenticated user (public registration), default to customer
+            value = User.CUSTOMER
         return value
 
     def create(self, validated_data):
@@ -97,3 +112,60 @@ class EmailVerificationSerializer(serializers.Serializer):
             return value
         except User.DoesNotExist:
             raise serializers.ValidationError("Invalid verification token")
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    """Serializer for user profile information"""
+
+    role_display = serializers.CharField(source="get_role_display", read_only=True)
+    permissions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "email",
+            "username",
+            "first_name",
+            "last_name",
+            "role",
+            "role_display",
+            "is_email_verified",
+            "date_joined",
+            "permissions",
+        )
+        read_only_fields = ("id", "email", "date_joined", "role_display", "permissions")
+
+    def get_permissions(self, obj):
+        """Return user permissions based on role"""
+        return {
+            "can_manage_shops": obj.can_manage_shops,
+            "can_manage_employees": obj.can_manage_employees,
+            "can_view_all_orders": obj.can_view_all_orders,
+            "can_create_repair_orders": obj.can_create_repair_orders,
+            "can_manage_inventory": obj.can_manage_inventory,
+            "can_view_financial_data": obj.can_view_financial_data,
+            "is_owner": obj.is_owner,
+            "is_employee": obj.is_employee,
+            "is_customer": obj.is_customer,
+        }
+
+
+class UserListSerializer(serializers.ModelSerializer):
+    """Serializer for listing users (for owners/admins)"""
+
+    role_display = serializers.CharField(source="get_role_display", read_only=True)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "role",
+            "role_display",
+            "is_email_verified",
+            "is_active",
+            "date_joined",
+        )
