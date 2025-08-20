@@ -1,8 +1,18 @@
 from rest_framework import serializers
 from .models import (
-    Shop, Service, Part, Employee, Customer,
-    Appointment, RepairOrder, RepairOrderService, RepairOrderPart
+    Shop,
+    Service,
+    Part,
+    Employee,
+    Customer,
+    Vehicle,
+    VehicleProblem,
+    Appointment,
+    RepairOrder,
+    RepairOrderService,
+    RepairOrderPart,
 )
+
 
 # ------------------------
 # PART
@@ -14,8 +24,8 @@ class PartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Part
-        fields = '__all__'
-        read_only_fields = ['total_cost', 'created_at']
+        fields = "__all__"
+        read_only_fields = ["total_cost", "created_at"]
 
 
 # ------------------------
@@ -26,7 +36,7 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Service
-        fields = '__all__'
+        fields = "__all__"
 
 
 # ------------------------
@@ -35,7 +45,7 @@ class ServiceSerializer(serializers.ModelSerializer):
 class EmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
-        fields = '__all__'
+        fields = "__all__"
 
 
 # ------------------------
@@ -44,19 +54,60 @@ class EmployeeSerializer(serializers.ModelSerializer):
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = '__all__'
+        fields = "__all__"
+
+
+# ------------------------
+# VEHICLE
+# ------------------------
+class VehicleSerializer(serializers.ModelSerializer):
+    customer = CustomerSerializer(read_only=True)
+    customer_id = serializers.IntegerField(write_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+
+    class Meta:
+        model = Vehicle
+        fields = "__all__"
+
+    def to_representation(self, instance):
+        """Customize the output to include customer name at the top level"""
+        representation = super().to_representation(instance)
+        if instance.customer:
+            representation["customer_name"] = instance.customer.name
+            representation["customer_email"] = instance.customer.email
+            representation["customer_phone"] = instance.customer.phone_number
+        else:
+            representation["customer_name"] = "Unknown Customer"
+            representation["customer_email"] = None
+            representation["customer_phone"] = None
+        return representation
+
+
+# ------------------------
+# VEHICLE PROBLEM
+# ------------------------
+class VehicleProblemSerializer(serializers.ModelSerializer):
+    vehicle = VehicleSerializer(read_only=True)
+    vehicle_id = serializers.IntegerField(write_only=True)
+
+    class Meta:
+        model = VehicleProblem
+        fields = "__all__"
+        read_only_fields = ["reported_date"]
 
 
 # ------------------------
 # APPOINTMENT
 # ------------------------
 class AppointmentSerializer(serializers.ModelSerializer):
-    customer = CustomerSerializer(read_only=True)
-    service = ServiceSerializer(read_only=True)
+    vehicle = VehicleSerializer(read_only=True)
+    vehicle_id = serializers.IntegerField(write_only=True)
+    reported_problem = VehicleProblemSerializer(read_only=True)
+    reported_problem_id = serializers.IntegerField(write_only=True, required=False)
 
     class Meta:
         model = Appointment
-        fields = '__all__'
+        fields = "__all__"
 
 
 # ------------------------
@@ -70,8 +121,8 @@ class RepairOrderPartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RepairOrderPart
-        fields = '__all__'
-        read_only_fields = ['total_price']
+        fields = "__all__"
+        read_only_fields = ["total_price"]
 
 
 # ------------------------
@@ -82,7 +133,7 @@ class RepairOrderServiceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RepairOrderService
-        fields = '__all__'
+        fields = "__all__"
 
 
 # ------------------------
@@ -92,13 +143,13 @@ class RepairOrderSerializer(serializers.ModelSerializer):
     repair_order_parts = RepairOrderPartSerializer(many=True, read_only=True)
     repair_order_services = RepairOrderServiceSerializer(many=True, read_only=True)
     calculated_total_cost = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True, source='calculate_total_cost'
+        max_digits=10, decimal_places=2, read_only=True, source="calculate_total_cost"
     )
 
     class Meta:
         model = RepairOrder
-        fields = '__all__'
-        read_only_fields = ['total_cost', 'calculated_total_cost', 'date_created']
+        fields = "__all__"
+        read_only_fields = ["total_cost", "calculated_total_cost", "date_created"]
 
 
 # ------------------------
@@ -114,6 +165,14 @@ class ShopSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Shop
-        fields = '__all__'
-        read_only_fields = ['created_at']
-        read_only_fields = ['created_at', 'services', 'parts', 'employees', 'customers', 'appointments', 'repair_orders']
+        fields = "__all__"
+        read_only_fields = ["created_at"]
+        read_only_fields = [
+            "created_at",
+            "services",
+            "parts",
+            "employees",
+            "customers",
+            "appointments",
+            "repair_orders",
+        ]

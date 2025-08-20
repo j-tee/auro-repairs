@@ -2,11 +2,23 @@ from rest_framework.response import Response
 from rest_framework import viewsets, filters, status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
 
-from .models import Shop, Service, Part, Employee, Customer, Appointment, RepairOrder
+from .models import (
+    Shop,
+    Service,
+    Part,
+    Employee,
+    Customer,
+    Vehicle,
+    VehicleProblem,
+    Appointment,
+    RepairOrder,
+    RepairOrderPart,
+    RepairOrderService,
+)
 from auto_repairs_backend.permissions import (
     IsOwner,
     IsOwnerOrEmployee,
@@ -24,8 +36,12 @@ from .serializers import (
     PartSerializer,
     EmployeeSerializer,
     CustomerSerializer,
+    VehicleSerializer,
+    VehicleProblemSerializer,
     AppointmentSerializer,
     RepairOrderSerializer,
+    RepairOrderPartSerializer,
+    RepairOrderServiceSerializer,
 )
 
 
@@ -37,6 +53,160 @@ class MyProtectedView(APIView):
 
     def get(self, request):
         return Response({"message": "You are authenticated"})
+
+
+# -------------------
+# Global Search API
+# -------------------
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def global_search(request):
+    """
+    Global search across vehicles, customers, and repair orders.
+    Query parameter: ?q=search_term
+    """
+    search_query = request.GET.get("q", "").strip()
+
+    if not search_query:
+        return Response(
+            {"vehicles": [], "customers": [], "repair_orders": [], "total_results": 0}
+        )
+
+    # Get user for role-based filtering
+    user = request.user
+
+    # Initialize results
+    results = {"vehicles": [], "customers": [], "repair_orders": [], "total_results": 0}
+
+    try:
+        # Search Vehicles - ONLY by vehicle attributes, not customer names
+        vehicle_queryset = Vehicle.objects.none()
+        if user.is_owner or user.is_employee:
+            vehicle_queryset = Vehicle.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            vehicle_queryset = Vehicle.objects.filter(customer=user.customer_profile)
+
+        vehicles = vehicle_queryset.filter(
+            Q(make__icontains=search_query)
+            | Q(model__icontains=search_query)
+            | Q(vin__icontains=search_query)
+            | Q(license_plate__icontains=search_query)
+            | Q(color__icontains=search_query)
+        ).select_related("customer")
+
+        # Serialize vehicles
+        vehicle_results = []
+        for vehicle in vehicles:
+            vehicle_results.append(
+                {
+                    "id": vehicle.id,
+                    "make": vehicle.make,
+                    "model": vehicle.model,
+                    "year": vehicle.year,
+                    "vin": vehicle.vin,
+                    "license_plate": vehicle.license_plate,
+                    "color": vehicle.color,
+                    "customer_name": (
+                        vehicle.customer.name
+                        if vehicle.customer
+                        else "Unknown Customer"
+                    ),
+                    "customer_email": (
+                        vehicle.customer.email if vehicle.customer else None
+                    ),
+                    "type": "vehicle",
+                }
+            )
+        results["vehicles"] = vehicle_results
+
+        # Search Customers - by customer attributes AND customers who own matching vehicles
+        customer_queryset = Customer.objects.none()
+        if user.is_owner or user.is_employee:
+            customer_queryset = Customer.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            customer_queryset = Customer.objects.filter(id=user.customer_profile.id)
+
+        customers = customer_queryset.filter(
+            Q(name__icontains=search_query)
+            | Q(email__icontains=search_query)
+            | Q(address__icontains=search_query)
+            | Q(phone_number__icontains=search_query)
+            | Q(vehicles__make__icontains=search_query)
+            | Q(vehicles__model__icontains=search_query)
+        ).distinct()
+
+        # Serialize customers
+        customer_results = []
+        for customer in customers:
+            customer_results.append(
+                {
+                    "id": customer.id,
+                    "name": customer.name,
+                    "email": customer.email,
+                    "phone_number": customer.phone_number,
+                    "address": customer.address,
+                    "type": "customer",
+                }
+            )
+        results["customers"] = customer_results
+
+        # Search Repair Orders - by notes AND orders for matching vehicles
+        order_queryset = RepairOrder.objects.none()
+        if user.is_owner or user.is_employee:
+            order_queryset = RepairOrder.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            order_queryset = RepairOrder.objects.filter(
+                vehicle__customer=user.customer_profile
+            )
+
+        repair_orders = order_queryset.filter(
+            Q(notes__icontains=search_query)
+            | Q(vehicle__make__icontains=search_query)
+            | Q(vehicle__model__icontains=search_query)
+            | Q(vehicle__vin__icontains=search_query)
+        ).select_related("vehicle", "vehicle__customer")
+
+        # Serialize repair orders
+        order_results = []
+        for order in repair_orders:
+            order_results.append(
+                {
+                    "id": order.id,
+                    "total_cost": float(order.total_cost),
+                    "date_created": order.date_created.isoformat(),
+                    "notes": order.notes,
+                    "vehicle": (
+                        {
+                            "id": order.vehicle.id,
+                            "make": order.vehicle.make,
+                            "model": order.vehicle.model,
+                            "year": order.vehicle.year,
+                            "customer_name": (
+                                order.vehicle.customer.name
+                                if order.vehicle.customer
+                                else "Unknown Customer"
+                            ),
+                        }
+                        if order.vehicle
+                        else None
+                    ),
+                    "type": "repair_order",
+                }
+            )
+        results["repair_orders"] = order_results
+
+        # Calculate total results
+        results["total_results"] = (
+            len(vehicle_results) + len(customer_results) + len(order_results)
+        )
+
+        return Response(results)
+
+    except Exception as e:
+        return Response(
+            {"error": f"Search failed: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 # -------------------
@@ -194,6 +364,87 @@ class CustomerViewSet(BaseViewSet):
 
 
 # -------------------
+# Vehicle ViewSet
+# -------------------
+class VehicleViewSet(BaseViewSet):
+    queryset = Vehicle.objects.all()
+    serializer_class = VehicleSerializer
+    permission_classes = [IsAuthenticated]
+    filterset_fields = ["customer", "make", "model", "year"]
+    search_fields = ["make", "model", "vin", "license_plate", "color"]
+    ordering_fields = ["make", "model", "year"]
+
+    def get_queryset(self):
+        """Filter vehicles based on user role"""
+        user = self.request.user
+        if user.is_owner or user.is_employee:
+            return Vehicle.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            # Customers can only see their own vehicles
+            return Vehicle.objects.filter(customer=user.customer_profile)
+        return Vehicle.objects.none()
+
+    def get_permissions(self):
+        """Role-based permissions for vehicles"""
+        if self.action in ["list", "retrieve"]:
+            return [IsAuthenticated()]
+        elif self.action == "create":
+            return [IsAuthenticated()]  # Anyone can create vehicles
+        elif self.action in ["update", "partial_update"]:
+            return [IsAuthenticated(), IsCustomerOwnerOfObject()]
+        else:
+            return [IsAuthenticated(), IsOwnerOrEmployee()]
+
+
+# -------------------
+# Vehicle Problem ViewSet
+# -------------------
+class VehicleProblemViewSet(BaseViewSet):
+    queryset = VehicleProblem.objects.all()
+    serializer_class = VehicleProblemSerializer
+    permission_classes = [IsAuthenticated]
+    filterset_fields = ["vehicle", "resolved"]
+    search_fields = [
+        "description",
+        "vehicle__make",
+        "vehicle__model",
+        "vehicle__customer__name",
+    ]
+    ordering_fields = ["reported_date", "resolved"]
+
+    def get_queryset(self):
+        """Filter vehicle problems based on user role"""
+        user = self.request.user
+        if user.is_owner or user.is_employee:
+            return VehicleProblem.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            # Customers can only see problems for their own vehicles
+            return VehicleProblem.objects.filter(
+                vehicle__customer=user.customer_profile
+            )
+        return VehicleProblem.objects.none()
+
+    def get_permissions(self):
+        """Role-based permissions for vehicle problems"""
+        if self.action in ["list", "retrieve"]:
+            return [IsAuthenticated()]
+        elif self.action == "create":
+            return [IsAuthenticated()]  # Anyone can report problems
+        elif self.action in ["update", "partial_update"]:
+            # Only customers can update their own problems, or employees/owners
+            return [IsAuthenticated(), IsCustomerOwnerOfObject()]
+        else:
+            return [IsAuthenticated(), IsOwnerOrEmployee()]
+
+    @action(detail=False, methods=["get"])
+    def unresolved(self, request):
+        """Get unresolved vehicle problems"""
+        queryset = self.get_queryset().filter(resolved=False).order_by("reported_date")
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+# -------------------
 # Appointment ViewSet
 # -------------------
 class AppointmentViewSet(BaseViewSet):
@@ -300,6 +551,54 @@ class RepairOrderViewSet(BaseViewSet):
         }
 
         return Response(summary)
+
+
+# -------------------
+# RepairOrderPart ViewSet
+# -------------------
+class RepairOrderPartViewSet(BaseViewSet):
+    queryset = RepairOrderPart.objects.all()
+    serializer_class = RepairOrderPartSerializer
+    permission_classes = [IsAuthenticated, CanCreateRepairOrders]
+    filterset_fields = ["repair_order", "part"]
+    search_fields = ["part__name", "part__part_number", "repair_order__id"]
+    ordering_fields = ["quantity", "part__name"]
+
+    def get_queryset(self):
+        """Filter repair order parts based on user role"""
+        user = self.request.user
+        if user.is_owner or user.is_employee:
+            return RepairOrderPart.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            # Customers can only see parts for their own repair orders
+            return RepairOrderPart.objects.filter(
+                repair_order__vehicle__customer=user.customer_profile
+            )
+        return RepairOrderPart.objects.none()
+
+
+# -------------------
+# RepairOrderService ViewSet
+# -------------------
+class RepairOrderServiceViewSet(BaseViewSet):
+    queryset = RepairOrderService.objects.all()
+    serializer_class = RepairOrderServiceSerializer
+    permission_classes = [IsAuthenticated, CanCreateRepairOrders]
+    filterset_fields = ["repair_order", "service"]
+    search_fields = ["service__name", "repair_order__id"]
+    ordering_fields = ["service__name", "service__labor_cost"]
+
+    def get_queryset(self):
+        """Filter repair order services based on user role"""
+        user = self.request.user
+        if user.is_owner or user.is_employee:
+            return RepairOrderService.objects.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):
+            # Customers can only see services for their own repair orders
+            return RepairOrderService.objects.filter(
+                repair_order__vehicle__customer=user.customer_profile
+            )
+        return RepairOrderService.objects.none()
 
 
 # -------------------

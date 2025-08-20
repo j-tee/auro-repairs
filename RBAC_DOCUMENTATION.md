@@ -161,6 +161,7 @@ def get_queryset(self):
 
 ### Sample Users Created
 ```
+Owner: owner@autorepairshop.com (password: owner123)
 Owner: mike.manager@autorepair.com (password: password123)
 Employee: john.mechanic@autorepair.com (password: password123)  
 Customer: alice.cooper@customer.com (password: password123)
@@ -172,8 +173,8 @@ Customer: alice.cooper@customer.com (password: password123)
 ```bash
 POST /api/token/
 {
-  "email": "mike.manager@autorepair.com",
-  "password": "password123"
+  "email": "owner@autorepairshop.com",
+  "password": "owner123"
 }
 ```
 
