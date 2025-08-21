@@ -43,7 +43,7 @@ def register_user(request):
                     "message": "User registered successfully. Please check your email to verify your account.",
                     "user_id": str(user_obj.id),
                     "email": str(user_obj.email),
-                    "role": user_obj.role,
+                    "role": user_obj.role,  # type: ignore
                 },
                 status=status.HTTP_201_CREATED,
             )
@@ -63,8 +63,8 @@ def verify_email(request):
     """
     serializer = EmailVerificationSerializer(data=request.data)
     if serializer.is_valid():
-        validated_data = serializer.validated_data if serializer.validated_data else {}
-        token = validated_data.get("token")
+        validated_data = getattr(serializer, 'validated_data', {})  # type: ignore
+        token = validated_data.get("token")  # type: ignore
         if not token:
             return Response(
                 {"error": "Token is required."},
@@ -72,10 +72,10 @@ def verify_email(request):
             )
         try:
             user = User.objects.get(email_verification_token=token)
-            user.is_email_verified = True
+            user.is_email_verified = True  # type: ignore
             user.is_active = True  # Activate the user
-            user.email_verification_token = None  # Clear the token
-            user.email_verification_sent_at = None
+            user.email_verification_token = None  # type: ignore - Clear the token
+            user.email_verification_sent_at = None  # type: ignore
             user.save()
 
             return Response(
@@ -104,7 +104,7 @@ def resend_verification_email(request):
 
     try:
         user = User.objects.get(email=email)
-        if user.is_email_verified:
+        if user.is_email_verified:  # type: ignore
             return Response(
                 {"message": "Email is already verified"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -114,13 +114,13 @@ def resend_verification_email(request):
         import uuid
         from django.utils import timezone
 
-        user.email_verification_token = uuid.uuid4()
-        user.email_verification_sent_at = timezone.now()
+        user.email_verification_token = uuid.uuid4()  # type: ignore
+        user.email_verification_sent_at = timezone.now()  # type: ignore
         user.save()
 
         # Send verification email using the serializer method
         serializer_instance = UserRegistrationSerializer()
-        serializer_instance.send_verification_email(user)
+        serializer_instance.send_verification_email(user)  # type: ignore
 
         return Response(
             {"message": "Verification email sent successfully"},
@@ -180,16 +180,16 @@ def update_user_role(request, user_id):
         return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
 
     new_role = request.data.get("role")
-    if new_role not in [choice[0] for choice in User.USER_ROLES]:
+    if new_role not in [choice[0] for choice in User.USER_ROLES]:  # type: ignore
         return Response({"error": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
-    user.role = new_role
+    user.role = new_role  # type: ignore
     user.save()
 
     serializer = UserProfileSerializer(user)
     return Response(
         {
-            "message": f"User role updated to {user.get_role_display()}",
+            "message": f"User role updated to {user.get_role_display()}",  # type: ignore
             "user": serializer.data,
         },
         status=status.HTTP_200_OK,

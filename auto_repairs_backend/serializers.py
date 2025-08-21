@@ -117,7 +117,7 @@ class EmailVerificationSerializer(serializers.Serializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     """Serializer for user profile information"""
 
-    role_display = serializers.CharField(source="get_role_display", read_only=True)
+    role_display = serializers.CharField(source="get_role_display", read_only=True)  # type: ignore
     permissions = serializers.SerializerMethodField()
 
     class Meta:
@@ -154,7 +154,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 class UserListSerializer(serializers.ModelSerializer):
     """Serializer for listing users (for owners/admins)"""
 
-    role_display = serializers.CharField(source="get_role_display", read_only=True)
+    role_display = serializers.CharField(source="get_role_display", read_only=True)  # type: ignore
 
     class Meta:
         model = User

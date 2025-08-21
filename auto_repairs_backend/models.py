@@ -34,7 +34,7 @@ class User(AbstractUser):
     REQUIRED_FIELDS = ["username"]
 
     def __str__(self):
-        return f"{self.email} ({self.get_role_display()})"
+        return f"{self.email} ({self.get_role_display()})"  # type: ignore
 
     def is_verification_token_expired(self):
         if not self.email_verification_sent_at:
@@ -93,6 +93,6 @@ class User(AbstractUser):
             from shop.models import Shop
 
             return Shop.objects.all()
-        elif self.is_employee and hasattr(self, "employee_profile"):
-            return [self.employee_profile.shop]
+        elif self.is_employee and hasattr(self, "employee_profile"):  # type: ignore
+            return [self.employee_profile.shop]  # type: ignore
         return []
