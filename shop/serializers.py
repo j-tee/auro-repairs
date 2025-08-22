@@ -57,6 +57,13 @@ class CustomerSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+# Lightweight customer serializer for nested use
+class CustomerSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = ["id", "name", "email", "phone_number"]
+
+
 # ------------------------
 # VEHICLE
 # ------------------------
@@ -83,6 +90,13 @@ class VehicleSerializer(serializers.ModelSerializer):
         return representation
 
 
+# Lightweight vehicle serializer for nested use
+class VehicleSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Vehicle
+        fields = ["id", "make", "model", "year", "license_plate", "vin", "color"]
+
+
 # ------------------------
 # VEHICLE PROBLEM
 # ------------------------
@@ -94,6 +108,13 @@ class VehicleProblemSerializer(serializers.ModelSerializer):
         model = VehicleProblem
         fields = "__all__"
         read_only_fields = ["reported_date"]
+
+
+# Lightweight vehicle problem serializer for nested use
+class VehicleProblemSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VehicleProblem
+        fields = ["id", "description", "resolved", "reported_date"]
 
 
 # ------------------------
@@ -108,6 +129,36 @@ class AppointmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Appointment
         fields = "__all__"
+
+
+# Enhanced appointment serializer with related data optimized for frontend
+class AppointmentDetailSerializer(serializers.ModelSerializer):
+    # Add customer info derived from vehicle relationship
+    customer_id = serializers.IntegerField(source="vehicle.customer.id", read_only=True)
+    customer = CustomerSummarySerializer(source="vehicle.customer", read_only=True)
+
+    # Vehicle summary info
+    vehicle = VehicleSummarySerializer(read_only=True)
+    vehicle_id = serializers.IntegerField(write_only=True)
+
+    # Reported problem summary
+    reported_problem = VehicleProblemSummarySerializer(read_only=True)
+    reported_problem_id = serializers.IntegerField(write_only=True, required=False)
+
+    class Meta:
+        model = Appointment
+        fields = [
+            "id",
+            "description",
+            "date",
+            "status",
+            "customer_id",
+            "customer",
+            "vehicle_id",
+            "vehicle",
+            "reported_problem_id",
+            "reported_problem",
+        ]
 
 
 # ------------------------

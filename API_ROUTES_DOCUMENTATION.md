@@ -94,6 +94,8 @@ POST   /api/shop/vehicles/          # Create new vehicle
 GET    /api/shop/vehicles/{id}/     # Get specific vehicle
 PUT    /api/shop/vehicles/{id}/     # Update vehicle (own vehicles for customers)
 DELETE /api/shop/vehicles/{id}/     # Delete vehicle (owner/employee only)
+GET    /api/shop/vehicles/by_customer/?customer_id={id}  # Get vehicles by customer
+GET    /api/shop/customers/{id}/vehicles/  # Nested route for customer vehicles
 ```
 
 ### Vehicle Problems
@@ -104,17 +106,92 @@ GET    /api/shop/vehicle-problems/{id}/  # Get specific problem
 PUT    /api/shop/vehicle-problems/{id}/  # Update problem (own problems for customers)
 DELETE /api/shop/vehicle-problems/{id}/  # Delete problem (owner/employee only)
 GET    /api/shop/vehicle-problems/unresolved/  # Get unresolved problems
+GET    /api/shop/vehicle-problems/by_vehicle/?vehicle_id={id}  # Problems by vehicle
+GET    /api/shop/vehicles/{id}/problems/  # Nested route for vehicle problems
+```
+
+### Enhanced Query Parameters for Vehicle Problems
+```
+?vehicle_id=27              # Filter problems by specific vehicle
+?customer_id=19             # Filter problems by specific customer
+?resolved=false             # Filter by resolution status
+?search=brake               # Search in problem descriptions
 ```
 
 ## Appointment Management
 
 ```
-GET    /api/shop/appointments/      # List appointments (filtered by user role)
+GET    /api/shop/appointments/      # List appointments with enhanced data (filtered by user role)
 POST   /api/shop/appointments/      # Create new appointment (all authenticated users)
-GET    /api/shop/appointments/{id}/ # Get specific appointment
+GET    /api/shop/appointments/{id}/ # Get specific appointment with full details
 PUT    /api/shop/appointments/{id}/ # Update appointment (owner/employee only)
 DELETE /api/shop/appointments/{id}/ # Delete appointment (owner/employee only)
-GET    /api/shop/appointments/upcoming/  # Get upcoming appointments
+GET    /api/shop/appointments/upcoming/  # Get upcoming appointments only
+GET    /api/shop/appointments/stats/     # Get appointment statistics (owner/employee only)
+```
+
+### Enhanced Appointment Response Format
+
+The appointments endpoint now returns complete related data in a single call:
+
+```json
+{
+  "id": 27,
+  "description": "Scheduled maintenance and inspection for Toyota Camry",
+  "date": "2025-08-23T11:51:29.742669Z",
+  "status": "pending",
+  "customer_id": 19,
+  "customer": {
+    "id": 19,
+    "name": "Alice Cooper",
+    "email": "alice.cooper@customer.com",
+    "phone_number": "(555) 714-5422"
+  },
+  "vehicle": {
+    "id": 27,
+    "make": "Toyota",
+    "model": "Camry",
+    "year": 2020,
+    "license_plate": "ABC-5189",
+    "vin": "1HGBH41JXMN118133",
+    "color": "Silver"
+  },
+  "reported_problem": {
+    "id": 30,
+    "description": "Battery seems to be dying quickly",
+    "resolved": false,
+    "reported_date": "2025-08-19T11:51:29.698533Z"
+  }
+}
+```
+
+### Advanced Query Parameters
+
+```
+?status=pending              # Filter by status (pending/in_progress/completed/cancelled)
+?customer_id=15             # Filter by specific customer
+?vehicle_id=27              # Filter by specific vehicle
+?date_from=2025-08-01       # Filter appointments from date
+?date_to=2025-08-31         # Filter appointments to date
+?search=toyota              # Search across customer names, vehicle make/model, description
+?limit=50                   # Limit results (pagination)
+?ordering=date              # Order by date (add - for descending: -date)
+```
+
+### Statistics Endpoint Response
+
+```json
+{
+  "total_appointments": 7,
+  "todays_appointments": 0,
+  "upcoming_appointments": 4,
+  "completed_this_month": 3,
+  "appointments_by_status": [
+    {"status": "pending", "count": 4},
+    {"status": "completed", "count": 3}
+  ],
+  "this_week_count": 0
+}
 ```
 
 ## Repair Order Management
@@ -126,7 +203,39 @@ POST   /api/shop/repair-orders/     # Create new repair order (owner/employee on
 GET    /api/shop/repair-orders/{id}/ # Get specific repair order
 PUT    /api/shop/repair-orders/{id}/ # Update repair order (owner/employee only)
 DELETE /api/shop/repair-orders/{id}/ # Delete repair order (owner/employee only)
-GET    /api/shop/repair-orders/financial_summary/  # Financial summary (owner only)
+GET    /api/shop/repair-orders/active/  # Get active repair orders
+GET    /api/shop/repair-orders/stats/   # Get repair order statistics (owner only)
+GET    /api/shop/repair-orders/by_customer/?customer_id={id}  # Orders by customer
+GET    /api/shop/repair-orders/by_vehicle/?vehicle_id={id}    # Orders by vehicle
+GET    /api/shop/customers/{id}/repair-orders/  # Nested route for customer orders
+GET    /api/shop/vehicles/{id}/repair-orders/   # Nested route for vehicle orders
+```
+
+### Enhanced Query Parameters for Repair Orders
+```
+?customer_id=19             # Filter orders by specific customer
+?vehicle_id=27              # Filter orders by specific vehicle
+?status=completed           # Filter by order status
+?date_from=2025-08-01       # Filter orders from date
+?date_to=2025-08-31         # Filter orders to date
+?search=brake               # Search in order notes and descriptions
+```
+
+### Repair Order Statistics Response
+```json
+{
+  "total_orders": 45,
+  "active_orders": 12,
+  "completed_orders": 33,
+  "total_revenue": 125000.00,
+  "average_order_value": 3787.88,
+  "orders_this_month": 8,
+  "orders_by_status": [
+    {"status": "pending", "count": 5},
+    {"status": "in_progress", "count": 7},
+    {"status": "completed", "count": 33}
+  ]
+}
 ```
 
 ### Repair Order Parts (Owner + Employee)

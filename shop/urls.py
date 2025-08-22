@@ -19,6 +19,37 @@ router.register(r"repair-order-parts", views.RepairOrderPartViewSet)
 urlpatterns = [
     # Global search endpoint
     path("search/", views.global_search, name="global_search"),
+    # Nested resource endpoints for better API organization
+    path(
+        "customers/<int:customer_id>/vehicles/",
+        views.VehicleViewSet.as_view({"get": "by_customer"}),
+        name="customer_vehicles",
+    ),
+    path(
+        "customers/<int:customer_id>/appointments/",
+        views.AppointmentViewSet.as_view({"get": "list"}),
+        name="customer_appointments",
+    ),
+    path(
+        "customers/<int:customer_id>/repair-orders/",
+        views.RepairOrderViewSet.as_view({"get": "by_customer"}),
+        name="customer_repair_orders",
+    ),
+    path(
+        "vehicles/<int:vehicle_id>/problems/",
+        views.VehicleProblemViewSet.as_view({"get": "by_vehicle"}),
+        name="vehicle_problems",
+    ),
+    path(
+        "vehicles/<int:vehicle_id>/appointments/",
+        views.AppointmentViewSet.as_view({"get": "list"}),
+        name="vehicle_appointments",
+    ),
+    path(
+        "vehicles/<int:vehicle_id>/repair-orders/",
+        views.RepairOrderViewSet.as_view({"get": "by_vehicle"}),
+        name="vehicle_repair_orders",
+    ),
     # Include all router URLs
     path("", include(router.urls)),
 ]

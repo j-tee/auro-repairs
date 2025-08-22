@@ -41,6 +41,7 @@ from .serializers import (
     VehicleSerializer,
     VehicleProblemSerializer,
     AppointmentSerializer,
+    AppointmentDetailSerializer,
     RepairOrderSerializer,
     RepairOrderPartSerializer,
     RepairOrderServiceSerializer,
@@ -377,14 +378,38 @@ class VehicleViewSet(BaseViewSet):
     ordering_fields = ["make", "model", "year"]
 
     def get_queryset(self):
-        """Filter vehicles based on user role"""
+        """Filter vehicles based on user role with enhanced filtering"""
+        base_queryset = Vehicle.objects.select_related("customer").all()
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return Vehicle.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see their own vehicles
-            return Vehicle.objects.filter(customer=user.customer_profile)
-        return Vehicle.objects.none()
+            queryset = base_queryset.filter(customer=user.customer_profile)  # type: ignore[attr-defined]
+        else:
+            queryset = base_queryset.none()
+
+        # Add customer_id filtering for API calls
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+
+        return queryset.order_by("make", "model", "year")
+
+    @action(detail=False, methods=["get"])
+    def by_customer(self, request):
+        """Get vehicles for a specific customer"""
+        customer_id = request.query_params.get("customer_id")
+        if not customer_id:
+            return Response(
+                {"error": "customer_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vehicles = self.get_queryset().filter(customer_id=customer_id)
+        serializer = self.get_serializer(vehicles, many=True)
+        return Response(serializer.data)
 
     def get_permissions(self):
         """Role-based permissions for vehicles"""
@@ -415,16 +440,54 @@ class VehicleProblemViewSet(BaseViewSet):
     ordering_fields = ["reported_date", "resolved"]
 
     def get_queryset(self):
-        """Filter vehicle problems based on user role"""
+        """Filter vehicle problems based on user role with enhanced filtering"""
+        base_queryset = VehicleProblem.objects.select_related(
+            "vehicle", "vehicle__customer"
+        ).all()
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return VehicleProblem.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see problems for their own vehicles
-            return VehicleProblem.objects.filter(
-                vehicle__customer=user.customer_profile
+            queryset = base_queryset.filter(
+                vehicle__customer=user.customer_profile  # type: ignore[attr-defined]
             )
-        return VehicleProblem.objects.none()
+        else:
+            queryset = base_queryset.none()
+
+        # Add vehicle_id filtering
+        vehicle_id = self.request.query_params.get("vehicle_id")
+        if vehicle_id:
+            queryset = queryset.filter(vehicle_id=vehicle_id)
+
+        # Add customer_id filtering
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(vehicle__customer_id=customer_id)
+
+        return queryset.order_by("-reported_date")
+
+    @action(detail=False, methods=["get"])
+    def by_vehicle(self, request):
+        """Get problems for a specific vehicle"""
+        vehicle_id = request.query_params.get("vehicle_id")
+        if not vehicle_id:
+            return Response(
+                {"error": "vehicle_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        problems = self.get_queryset().filter(vehicle_id=vehicle_id)
+        serializer = self.get_serializer(problems, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def unresolved(self, request):
+        """Get unresolved problems"""
+        problems = self.get_queryset().filter(resolved=False)
+        serializer = self.get_serializer(problems, many=True)
+        return Response(serializer.data)
 
     def get_permissions(self):
         """Role-based permissions for vehicle problems"""
@@ -450,26 +513,110 @@ class VehicleProblemViewSet(BaseViewSet):
 # Appointment ViewSet
 # -------------------
 class AppointmentViewSet(BaseViewSet):
-    queryset = Appointment.objects.all()
-    serializer_class = AppointmentSerializer
+    queryset = Appointment.objects.all()  # Default queryset for router registration
+    serializer_class = AppointmentDetailSerializer
     permission_classes = [IsAuthenticated]
-    filterset_fields = ["vehicle", "date", "status"]
+    filterset_fields = ["vehicle", "date", "status", "vehicle__customer"]
     search_fields = [
         "vehicle__customer__name",
         "vehicle__make",
         "vehicle__model",
+        "description",
         "status",
     ]
     ordering_fields = ["date", "status"]
 
     def get_queryset(self):
-        """Filter appointments based on user role"""
+        """Filter appointments based on user role with optimized queries"""
+        base_queryset = Appointment.objects.select_related(
+            "vehicle__customer", "reported_problem"
+        ).prefetch_related("vehicle")
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return Appointment.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see their own appointments
-            return Appointment.objects.filter(vehicle__customer=user.customer_profile)
+            queryset = base_queryset.filter(vehicle__customer=user.customer_profile)  # type: ignore[attr-defined]
+        else:
+            # No appointments for unauthorized users
+            queryset = base_queryset.none()
+
+        # Additional filtering based on query parameters
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(vehicle__customer_id=customer_id)
+
+        vehicle_id = self.request.query_params.get("vehicle_id")
+        if vehicle_id:
+            queryset = queryset.filter(vehicle_id=vehicle_id)
+
+        status = self.request.query_params.get("status")
+        if status:
+            queryset = queryset.filter(status=status)
+
+        # Date range filtering
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
+
+        return queryset.order_by("-date")
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Get appointment statistics"""
+        from django.db.models import Count, Q
+        from django.utils import timezone
+        from datetime import date, timedelta
+
+        today = date.today()
+        this_month = today.replace(day=1)
+        now = timezone.now()
+
+        # Get base queryset respecting user permissions
+        base_queryset = self.get_queryset()
+
+        stats = {
+            "total_appointments": base_queryset.count(),
+            "todays_appointments": base_queryset.filter(date__date=today).count(),
+            "upcoming_appointments": base_queryset.filter(
+                date__gt=now, status__in=["pending", "in_progress"]
+            ).count(),
+            "completed_this_month": base_queryset.filter(
+                date__gte=this_month, status="completed"
+            ).count(),
+            "appointments_by_status": list(
+                base_queryset.values("status").annotate(count=Count("id"))
+            ),
+            "this_week_count": base_queryset.filter(
+                date__gte=today - timedelta(days=7), date__lt=today + timedelta(days=1)
+            ).count(),
+        }
+
+        return Response(stats)
+
+    @action(detail=False, methods=["get"])
+    def upcoming(self, request):
+        """Get upcoming appointments only"""
+        from django.utils import timezone
+
+        upcoming_appointments = (
+            self.get_queryset()
+            .filter(date__gt=timezone.now(), status__in=["pending", "in_progress"])
+            .order_by("date")
+        )
+
+        # Apply pagination
+        page = self.paginate_queryset(upcoming_appointments)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(upcoming_appointments, many=True)
+        return Response(serializer.data)
         return Appointment.objects.none()
 
     def get_permissions(self):
@@ -502,7 +649,7 @@ class RepairOrderViewSet(BaseViewSet):
     queryset = RepairOrder.objects.all()
     serializer_class = RepairOrderSerializer
     permission_classes = [IsAuthenticated, CanViewAllOrders]
-    filterset_fields = ["vehicle", "date_created"]
+    filterset_fields = ["vehicle", "date_created", "status"]
     search_fields = [
         "vehicle__customer__name",
         "vehicle__make",
@@ -512,14 +659,115 @@ class RepairOrderViewSet(BaseViewSet):
     ordering_fields = ["date_created", "total_cost"]
 
     def get_queryset(self):
-        """Filter repair orders based on user role"""
+        """Filter repair orders based on user role with enhanced filtering"""
+        base_queryset = (
+            RepairOrder.objects.select_related("vehicle", "vehicle__customer")
+            .prefetch_related(
+                "repair_order_services__service", "repair_order_parts__part"
+            )
+            .all()
+        )
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return RepairOrder.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see their own repair orders
-            return RepairOrder.objects.filter(vehicle__customer=user.customer_profile)
-        return RepairOrder.objects.none()
+            queryset = base_queryset.filter(vehicle__customer=user.customer_profile)  # type: ignore[attr-defined]
+        else:
+            queryset = base_queryset.none()
+
+        # Add filtering options
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(vehicle__customer_id=customer_id)
+
+        vehicle_id = self.request.query_params.get("vehicle_id")
+        if vehicle_id:
+            queryset = queryset.filter(vehicle_id=vehicle_id)
+
+        status = self.request.query_params.get("status")
+        if status:
+            queryset = queryset.filter(status=status)
+
+        # Date range filtering
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        if date_from:
+            queryset = queryset.filter(date_created__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date_created__date__lte=date_to)
+
+        return queryset.order_by("-date_created")
+
+    @action(detail=False, methods=["get"])
+    def by_customer(self, request):
+        """Get repair orders for a specific customer"""
+        customer_id = request.query_params.get("customer_id")
+        if not customer_id:
+            return Response(
+                {"error": "customer_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        orders = self.get_queryset().filter(vehicle__customer_id=customer_id)
+        serializer = self.get_serializer(orders, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def by_vehicle(self, request):
+        """Get repair orders for a specific vehicle"""
+        vehicle_id = request.query_params.get("vehicle_id")
+        if not vehicle_id:
+            return Response(
+                {"error": "vehicle_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        orders = self.get_queryset().filter(vehicle_id=vehicle_id)
+        serializer = self.get_serializer(orders, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def active(self, request):
+        """Get active repair orders"""
+        orders = self.get_queryset().filter(status__in=["pending", "in_progress"])
+        serializer = self.get_serializer(orders, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Get repair order statistics"""
+        from django.db.models import Count, Sum, Avg
+        from datetime import date, timedelta
+
+        queryset = self.get_queryset()
+        today = date.today()
+        this_month = today.replace(day=1)
+
+        stats = {
+            "total_orders": queryset.count(),
+            "active_orders": queryset.filter(
+                status__in=["pending", "in_progress"]
+            ).count(),
+            "completed_orders": queryset.filter(status="completed").count(),
+            "total_revenue": queryset.filter(status="completed").aggregate(
+                total=Sum("total_cost")
+            )["total"]
+            or 0,
+            "average_order_value": queryset.filter(status="completed").aggregate(
+                avg=Avg("total_cost")
+            )["avg"]
+            or 0,
+            "orders_this_month": queryset.filter(
+                date_created__date__gte=this_month
+            ).count(),
+            "orders_by_status": list(
+                queryset.values("status").annotate(count=Count("id"))
+            ),
+        }
+
+        return Response(stats)
 
     def get_permissions(self):
         """Role-based permissions for repair orders"""
