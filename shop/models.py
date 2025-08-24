@@ -11,6 +11,12 @@ class Shop(models.Model):
     address = models.CharField(max_length=255)
     phone = models.CharField(max_length=20)
     email = models.EmailField(blank=True, null=True)
+    bay_count = models.PositiveIntegerField(
+        default=4, help_text="Number of service bays"
+    )
+    is_active = models.BooleanField(
+        default=True, help_text="Whether shop is operational"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

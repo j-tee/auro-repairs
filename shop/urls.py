@@ -19,6 +19,8 @@ router.register(r"repair-order-parts", views.RepairOrderPartViewSet)
 urlpatterns = [
     # Global search endpoint
     path("search/", views.global_search, name="global_search"),
+    # Shop statistics endpoint
+    path("shops/stats/", views.shop_stats, name="shop_stats"),
     # Nested resource endpoints for better API organization
     path(
         "customers/<int:customer_id>/vehicles/",

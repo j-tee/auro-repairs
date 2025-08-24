@@ -649,7 +649,7 @@ class RepairOrderViewSet(BaseViewSet):
     queryset = RepairOrder.objects.all()
     serializer_class = RepairOrderSerializer
     permission_classes = [IsAuthenticated, CanViewAllOrders]
-    filterset_fields = ["vehicle", "date_created", "status"]
+    filterset_fields = ["vehicle", "date_created"]
     search_fields = [
         "vehicle__customer__name",
         "vehicle__make",
@@ -663,7 +663,9 @@ class RepairOrderViewSet(BaseViewSet):
         base_queryset = (
             RepairOrder.objects.select_related("vehicle", "vehicle__customer")
             .prefetch_related(
-                "repair_order_services__service", "repair_order_parts__part"
+                "repair_order_services__service",
+                "repair_order_parts__part",
+                "vehicle__appointments",
             )
             .all()
         )
@@ -730,10 +732,24 @@ class RepairOrderViewSet(BaseViewSet):
 
     @action(detail=False, methods=["get"])
     def active(self, request):
-        """Get active repair orders"""
-        orders = self.get_queryset().filter(status__in=["pending", "in_progress"])
+        """Get active repair orders (linked to pending or in-progress appointments)"""
+        orders = (
+            self.get_queryset()
+            .filter(vehicle__appointments__status__in=["pending", "in_progress"])
+            .distinct()
+        )
         serializer = self.get_serializer(orders, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Get repair order statistics"""
+        from django.db.models import Count, Sum, Avg
+        from datetime import date, timedelta
+
+        queryset = self.get_queryset()
+        today = date.today()
+        this_month = today.replace(day=1)
 
     @action(detail=False, methods=["get"])
     def stats(self, request):
@@ -748,22 +764,32 @@ class RepairOrderViewSet(BaseViewSet):
         stats = {
             "total_orders": queryset.count(),
             "active_orders": queryset.filter(
-                status__in=["pending", "in_progress"]
-            ).count(),
-            "completed_orders": queryset.filter(status="completed").count(),
-            "total_revenue": queryset.filter(status="completed").aggregate(
-                total=Sum("total_cost")
-            )["total"]
+                vehicle__appointments__status__in=["pending", "in_progress"]
+            )
+            .distinct()
+            .count(),
+            "completed_orders": queryset.filter(
+                vehicle__appointments__status="completed"
+            )
+            .distinct()
+            .count(),
+            "total_revenue": queryset.filter(vehicle__appointments__status="completed")
+            .distinct()
+            .aggregate(total=Sum("total_cost"))["total"]
             or 0,
-            "average_order_value": queryset.filter(status="completed").aggregate(
-                avg=Avg("total_cost")
-            )["avg"]
+            "average_order_value": queryset.filter(
+                vehicle__appointments__status="completed"
+            )
+            .distinct()
+            .aggregate(avg=Avg("total_cost"))["avg"]
             or 0,
             "orders_this_month": queryset.filter(
                 date_created__date__gte=this_month
             ).count(),
-            "orders_by_status": list(
-                queryset.values("status").annotate(count=Count("id"))
+            "orders_by_appointment_status": list(
+                queryset.values("vehicle__appointments__status")
+                .annotate(count=Count("id", distinct=True))
+                .filter(vehicle__appointments__status__isnull=False)
             ),
         }
 
@@ -874,3 +900,95 @@ class RepairOrderServiceViewSet(BaseViewSet):
 #         'refresh': str(refresh),
 #         'access': str(refresh.access_token),
 #     }
+
+
+# -------------------
+# Shop Statistics API
+# -------------------
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def shop_stats(request):
+    """
+    Get aggregate statistics across all shops in the system.
+    Only accessible by employees and owners (not customers).
+    """
+    # Check user permissions - only employees and owners
+    if request.user.role == "customer":
+        return Response({"error": "Access denied"}, status=403)
+
+    from django.db.models import Sum, Count, Avg
+    from django.utils import timezone
+    from datetime import datetime
+    import calendar
+
+    # Get current month start
+    now = timezone.now()
+    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Shop metrics
+    total_shops = Shop.objects.count()
+    active_shops = Shop.objects.filter(is_active=True).count()
+    total_bays = Shop.objects.aggregate(total=Sum("bay_count"))["total"] or 0
+
+    # Calculate available bays (bays not currently occupied by in-progress appointments)
+    occupied_bays = Appointment.objects.filter(status="in_progress").count()
+    available_bays = max(0, total_bays - occupied_bays)
+
+    # Calculate utilization rate
+    utilization_rate = round(
+        ((total_bays - available_bays) / total_bays * 100) if total_bays > 0 else 0.0, 1
+    )
+
+    # Monthly appointments
+    monthly_appointments = Appointment.objects.filter(
+        date__gte=current_month_start
+    ).count()
+
+    # Monthly revenue from completed repair orders
+    monthly_revenue = (
+        RepairOrder.objects.filter(date_created__gte=current_month_start).aggregate(
+            total=Sum("total_cost")
+        )["total"]
+        or 0
+    )
+
+    # Average rating (placeholder - you may need to add a rating system)
+    # For now, using a calculated average based on appointment completion
+    total_appointments = Appointment.objects.count()
+    completed_appointments = Appointment.objects.filter(status="completed").count()
+    average_rating = round(
+        (
+            (completed_appointments / total_appointments * 5.0)
+            if total_appointments > 0
+            else 0.0
+        ),
+        1,
+    )
+
+    # Top services this month
+    top_services_queryset = (
+        Service.objects.filter(
+            repairorderservice__repair_order__date_created__gte=current_month_start
+        )
+        .annotate(count=Count("repairorderservice__repair_order"))
+        .order_by("-count")[:5]
+    )
+
+    top_services = [
+        {"service": service.name, "count": service.count}
+        for service in top_services_queryset
+    ]
+
+    stats = {
+        "total_shops": total_shops,
+        "active_shops": active_shops,
+        "total_bays": total_bays,
+        "available_bays": available_bays,
+        "utilization_rate": utilization_rate,
+        "monthly_appointments": monthly_appointments,
+        "monthly_revenue": float(monthly_revenue),
+        "average_rating": average_rating,
+        "top_services": top_services,
+    }
+
+    return Response(stats)
