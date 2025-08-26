@@ -828,6 +828,192 @@ class RepairOrderViewSet(BaseViewSet):
 
         return Response(summary)
 
+    @action(detail=True, methods=["post"])
+    def complete(self, request, pk=None):
+        """Complete a repair order using existing database fields only"""
+        repair_order = self.get_object()
+
+        # Calculate costs using existing relationships
+        try:
+            # Calculate labor costs from associated services
+            labor_total = sum(
+                ros.service.labor_cost
+                for ros in repair_order.repairorderservice_set.all()  # type: ignore
+            )
+
+            # Calculate parts costs from associated parts
+            parts_total = sum(
+                rop.part.unit_price * rop.quantity
+                for rop in repair_order.repairorderpart_set.all()  # type: ignore
+            )
+
+            # Calculate final total using existing fields
+            subtotal = labor_total + parts_total
+
+            # Apply existing discount
+            discount_value = repair_order.discount_amount
+            if repair_order.discount_percent > 0:
+                discount_value += (subtotal * repair_order.discount_percent) / 100
+
+            # Apply existing tax
+            taxable_amount = subtotal - discount_value
+            tax_value = (taxable_amount * repair_order.tax_percent) / 100
+
+            final_total = subtotal - discount_value + tax_value
+
+            # Update only existing fields
+            repair_order.total_cost = final_total
+            repair_order.notes = request.data.get(
+                "completion_notes", repair_order.notes
+            )
+            repair_order.save()
+
+            # Update related appointment status to completed
+            appointment_id = request.data.get("appointment_id")
+            if appointment_id:
+                try:
+                    appointment = Appointment.objects.get(
+                        id=appointment_id, vehicle=repair_order.vehicle
+                    )
+                    appointment.status = "completed"
+                    appointment.save()
+                except Appointment.DoesNotExist:
+                    pass
+            else:
+                # Complete pending appointments for this vehicle
+                pending_appointments = Appointment.objects.filter(
+                    vehicle=repair_order.vehicle, status="pending"
+                )
+                if pending_appointments.exists():
+                    latest = pending_appointments.order_by("-date").first()
+                    latest.status = "completed"  # type: ignore
+                    latest.save()  # type: ignore
+
+            return Response(
+                {
+                    "message": "Repair order completed successfully",
+                    "repair_order_id": repair_order.id,
+                    "cost_breakdown": {
+                        "labor_cost": str(labor_total),
+                        "parts_cost": str(parts_total),
+                        "subtotal": str(subtotal),
+                        "discount_amount": str(discount_value),
+                        "tax_amount": str(tax_value),
+                        "final_total": str(final_total),
+                    },
+                }
+            )
+
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to complete repair order: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=["get"], url_path="cost-breakdown")
+    def cost_breakdown(self, request, pk=None):
+        """Get cost breakdown using existing database fields only"""
+        repair_order = self.get_object()
+
+        # Calculate live costs from current associations
+        labor_costs = []
+        parts_costs = []
+
+        # Labor breakdown from services
+        for service_relation in repair_order.repairorderservice_set.all():  # type: ignore
+            labor_costs.append(
+                {
+                    "service_name": service_relation.service.name,
+                    "service_description": service_relation.service.description,
+                    "labor_cost": str(service_relation.service.labor_cost),
+                }
+            )
+
+        # Parts breakdown
+        for part_relation in repair_order.repairorderpart_set.all():  # type: ignore
+            parts_costs.append(
+                {
+                    "part_name": part_relation.part.name,
+                    "part_number": part_relation.part.part_number,
+                    "quantity": part_relation.quantity,
+                    "unit_price": str(part_relation.part.unit_price),
+                    "total_price": str(
+                        part_relation.part.unit_price * part_relation.quantity
+                    ),
+                }
+            )
+
+        # Calculate totals
+        labor_total = sum(float(item["labor_cost"]) for item in labor_costs)
+        parts_total = sum(float(item["total_price"]) for item in parts_costs)
+        subtotal = labor_total + parts_total
+
+        # Use existing discount and tax fields
+        discount_value = float(repair_order.discount_amount)
+        if repair_order.discount_percent > 0:
+            discount_value += (subtotal * float(repair_order.discount_percent)) / 100
+
+        taxable_amount = subtotal - discount_value
+        tax_value = (taxable_amount * float(repair_order.tax_percent)) / 100
+        final_total = subtotal - discount_value + tax_value
+
+        return Response(
+            {
+                "repair_order_id": repair_order.id,
+                "vehicle": {
+                    "id": repair_order.vehicle.id,
+                    "make": repair_order.vehicle.make,
+                    "model": repair_order.vehicle.model,
+                    "license_plate": repair_order.vehicle.license_plate,
+                },
+                "labor_costs": labor_costs,
+                "parts_costs": parts_costs,
+                "totals": {
+                    "labor_total": f"{labor_total:.2f}",
+                    "parts_total": f"{parts_total:.2f}",
+                    "subtotal": f"{subtotal:.2f}",
+                    "discount_amount": str(repair_order.discount_amount),
+                    "discount_percent": str(repair_order.discount_percent),
+                    "tax_percent": str(repair_order.tax_percent),
+                    "tax_amount": f"{tax_value:.2f}",
+                    "final_total": f"{final_total:.2f}",
+                    "current_total_cost": str(repair_order.total_cost),
+                },
+                "related_appointments": [
+                    {
+                        "id": apt.id,
+                        "description": apt.description,
+                        "date": apt.date.isoformat(),
+                        "status": apt.status,
+                    }
+                    for apt in Appointment.objects.filter(vehicle=repair_order.vehicle)
+                ],
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path="related-appointments")
+    def related_appointments(self, request, pk=None):
+        """Get appointments for the same vehicle as this repair order"""
+        repair_order = self.get_object()
+        appointments = Appointment.objects.filter(vehicle=repair_order.vehicle)
+
+        return Response(
+            {
+                "repair_order_id": repair_order.id,
+                "vehicle_id": repair_order.vehicle.id,
+                "appointments": [
+                    {
+                        "id": apt.id,
+                        "description": apt.description,
+                        "date": apt.date.isoformat(),
+                        "status": apt.status,
+                        "reported_problem_id": apt.reported_problem_id,
+                    }
+                    for apt in appointments
+                ],
+            }
+        )
+
 
 # -------------------
 # RepairOrderPart ViewSet

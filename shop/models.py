@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from decimal import Decimal
 
 # Create your models here.
@@ -183,12 +184,9 @@ class Appointment(models.Model):
 # Repair Orders
 # -------------------
 class RepairOrder(models.Model):
+    # EXISTING DATABASE FIELDS (DO NOT CHANGE)
     vehicle = models.ForeignKey(
         Vehicle, on_delete=models.CASCADE, related_name="repair_orders"
-    )
-    services = models.ManyToManyField(Service, through="RepairOrderService")
-    parts = models.ManyToManyField(
-        Part, through="RepairOrderPart", related_name="repair_orders"
     )
     discount_amount = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0.00")
@@ -197,7 +195,7 @@ class RepairOrder(models.Model):
         max_digits=5, decimal_places=2, default=Decimal("0.00")
     )
     tax_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal("0.00")
+        max_digits=5, decimal_places=2, default=Decimal("8.25")
     )
     total_cost = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0.00")
@@ -205,24 +203,57 @@ class RepairOrder(models.Model):
     date_created = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True, null=True)
 
+    # Many-to-many relationships through intermediate models
+    services = models.ManyToManyField(Service, through="RepairOrderService")
+    parts = models.ManyToManyField(
+        Part, through="RepairOrderPart", related_name="repair_orders"
+    )
+
+    # COMPUTED PROPERTIES (no database fields)
+    @property
+    def customer(self):
+        """Get customer through vehicle relationship"""
+        return self.vehicle.customer
+
+    @property
+    def is_completed(self):
+        """Check if any related appointments are completed"""
+        return self.vehicle.appointments.filter(status="completed").exists()  # type: ignore
+
+    @property
+    def related_appointments(self):
+        """Get all appointments for the same vehicle"""
+        return self.vehicle.appointments.all()  # type: ignore
+
     def calculate_total_cost(self):
-        labor_total = sum(s.labor_cost for s in self.services.all())
-        parts_total = sum(
-            item.part.unit_price * item.quantity for item in self.repair_order_parts.all()  # type: ignore[attr-defined]
+        # Calculate labor costs from services through RepairOrderService
+        labor_total = sum(
+            ros.service.labor_cost for ros in self.repair_order_services.all()  # type: ignore
         )
+
+        # Calculate parts costs from parts through RepairOrderPart
+        parts_total = sum(
+            item.part.unit_price * item.quantity
+            for item in self.repair_order_parts.all()  # type: ignore
+        )
+
         subtotal = labor_total + parts_total
 
-        discount_value = Decimal("0.00")
+        # Calculate discount
+        discount_value = self.discount_amount
         if self.discount_percent > 0:
-            discount_value = (subtotal * self.discount_percent) / Decimal("100")
-        elif self.discount_amount > 0:
-            discount_value = self.discount_amount
+            discount_value += (subtotal * self.discount_percent) / Decimal("100")
 
+        # Calculate tax on taxable items
         taxable_services_total = sum(
-            s.labor_cost for s in self.services.all() if s.taxable
+            ros.service.labor_cost
+            for ros in self.repair_order_services.all()  # type: ignore
+            if ros.service.taxable
         )
         taxable_parts_total = sum(
-            item.part.unit_price * item.quantity for item in self.repair_order_parts.all() if item.part.taxable  # type: ignore[attr-defined]
+            item.part.unit_price * item.quantity
+            for item in self.repair_order_parts.all()  # type: ignore
+            if item.part.taxable
         )
         taxable_amount = (taxable_services_total + taxable_parts_total) - discount_value
         tax_value = (
@@ -235,7 +266,6 @@ class RepairOrder(models.Model):
 
     def save(self, *args, **kwargs):
         # Only calculate total cost if the object already exists (has an ID)
-        # or if specifically requested
         skip_calculation = kwargs.pop("skip_calculation", False)
         if not skip_calculation and self.pk is not None:
             self.total_cost = self.calculate_total_cost()
