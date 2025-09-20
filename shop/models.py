@@ -48,6 +48,60 @@ class Employee(models.Model):
         null=True,
     )
 
+    # 🎯 WORKLOAD MANAGEMENT PROPERTIES
+    @property
+    def current_appointments(self):
+        """Get appointments currently assigned to this technician"""
+        return self.assigned_appointments.filter(
+            status__in=["assigned", "in_progress"]
+        )
+
+    @property
+    def workload_count(self):
+        """Number of active appointments assigned to this technician"""
+        return self.current_appointments.count()
+
+    @property
+    def is_available(self):
+        """Check if technician is available for new assignments"""
+        # Configurable threshold - technicians can handle max 3 concurrent jobs
+        return self.workload_count < 3
+
+    @property
+    def appointments_today(self):
+        """Get today's appointments for this technician"""
+        today = timezone.now().date()
+        return self.assigned_appointments.filter(date__date=today)
+
+    @property
+    def current_jobs(self):
+        """Get current job assignments with detailed information for frontend"""
+        appointments = self.current_appointments
+        jobs = []
+        
+        for appointment in appointments:
+            # Get customer through vehicle relationship
+            customer_name = appointment.vehicle.customer.name if appointment.vehicle and appointment.vehicle.customer else 'Unknown Customer'
+            vehicle_info = f"{appointment.vehicle.make} {appointment.vehicle.model}" if appointment.vehicle else 'Unknown Vehicle'
+            
+            job_data = {
+                'appointment_id': appointment.id,
+                'customer_name': customer_name,
+                'vehicle': vehicle_info,
+                'service_type': 'General Repair',  # Will be enhanced when service relationship is added
+                'status': appointment.status,
+                'started_at': appointment.date,
+                'estimated_completion': None  # Could be calculated based on service duration
+            }
+            jobs.append(job_data)
+        
+        return jobs
+
+    @property
+    def is_technician(self):
+        """Check if this employee is a technician"""
+        return "technician" in self.role.lower() or "mechanic" in self.role.lower()
+
     def __str__(self):
         return f"{self.name} - {self.shop.name}"
 
@@ -160,16 +214,68 @@ class Appointment(models.Model):
     )
     description = models.TextField(blank=True, null=True)  # Optional notes by customer
     date = models.DateTimeField()
+    
+    # 🎯 TECHNICIAN ALLOCATION FIELDS
+    assigned_technician = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_appointments",
+        help_text="Technician assigned to work on this appointment"
+    )
+    assigned_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the technician was assigned"
+    )
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When work actually began"
+    )
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When work was completed"
+    )
+    
     status = models.CharField(
         max_length=20,
         choices=[
-            ("pending", "Pending"),
-            ("in_progress", "In Progress"),
-            ("completed", "Completed"),
-            ("cancelled", "Cancelled"),
+            ("pending", "Pending"),          # Customer booked appointment (initial status)
+            ("assigned", "Assigned"),        # Technician assigned but not started
+            ("in_progress", "In Progress"),  # Work has begun
+            ("completed", "Completed"),      # Work finished
+            ("cancelled", "Cancelled"),      # Appointment cancelled
         ],
         default="pending",
     )
+
+    def assign_technician(self, technician):
+        """Assign a technician and update status to assigned"""
+        self.assigned_technician = technician
+        self.assigned_at = timezone.now()
+        if self.status == "pending":
+            self.status = "assigned"
+        self.save()
+        return self
+
+    def start_work(self):
+        """Mark work as started - status becomes in_progress"""
+        if self.assigned_technician and self.status == "assigned":
+            self.started_at = timezone.now()
+            self.status = "in_progress"
+            self.save()
+        return self
+
+    def complete_work(self):
+        """Mark work as completed"""
+        if self.status == "in_progress":
+            self.completed_at = timezone.now()
+            self.status = "completed"
+            self.save()
+        return self
 
     def __str__(self):
         problem = (
@@ -177,7 +283,8 @@ class Appointment(models.Model):
             if self.reported_problem
             else "No problem reported"
         )
-        return f"{self.vehicle.customer.name} - {self.vehicle} - {problem}"
+        tech_info = f" [Tech: {self.assigned_technician.name}]" if self.assigned_technician else ""
+        return f"{self.vehicle.customer.name} - {self.vehicle} - {problem}{tech_info}"
 
 
 # -------------------

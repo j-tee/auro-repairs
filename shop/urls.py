@@ -52,6 +52,32 @@ urlpatterns = [
         views.RepairOrderViewSet.as_view({"get": "by_vehicle"}),
         name="vehicle_repair_orders",
     ),
+    # Technician allocation endpoints
+    path(
+        "appointments/<int:appointment_id>/assign-technician/",
+        views.assign_technician,
+        name="assign_technician",
+    ),
+    path(
+        "appointments/<int:appointment_id>/start-work/",
+        views.start_work,
+        name="start_work",
+    ),
+    path(
+        "appointments/<int:appointment_id>/complete-work/",
+        views.complete_work,
+        name="complete_work",
+    ),
+    path(
+        "technicians/workload/",
+        views.technician_workload,
+        name="technician_workload",
+    ),
+    path(
+        "technicians/available/",
+        views.available_technicians,
+        name="available_technicians",
+    ),
     # Include all router URLs
     path("", include(router.urls)),
 ]
