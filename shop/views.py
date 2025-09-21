@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action, api_view, permission_classes
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
+from django.db import models
 from typing import Any, Dict, List
 
 from .models import (
@@ -41,7 +42,9 @@ from .serializers import (
     VehicleSerializer,
     VehicleProblemSerializer,
     AppointmentSerializer,
+    AppointmentDetailSerializer,
     RepairOrderSerializer,
+    CreateRepairOrderSerializer,
     RepairOrderPartSerializer,
     RepairOrderServiceSerializer,
 )
@@ -377,14 +380,83 @@ class VehicleViewSet(BaseViewSet):
     ordering_fields = ["make", "model", "year"]
 
     def get_queryset(self):
-        """Filter vehicles based on user role"""
+        """Filter vehicles based on user role with enhanced filtering"""
+        base_queryset = Vehicle.objects.select_related("customer").all()
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return Vehicle.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see their own vehicles
-            return Vehicle.objects.filter(customer=user.customer_profile)
-        return Vehicle.objects.none()
+            queryset = base_queryset.filter(customer=user.customer_profile)  # type: ignore[attr-defined]
+        else:
+            queryset = base_queryset.none()
+
+        # Add customer_id filtering for API calls
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+
+        return queryset.order_by("make", "model", "year")
+
+    @action(detail=False, methods=["get"])
+    def by_customer(self, request, customer_id=None):
+        """Get vehicles for a specific customer"""
+        # Get customer_id from URL parameter or query parameter
+        if not customer_id:
+            customer_id = request.query_params.get("customer_id")
+        
+        if not customer_id:
+            return Response(
+                {"error": "customer_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vehicles = self.get_queryset().filter(customer_id=customer_id)
+        serializer = self.get_serializer(vehicles, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="customers/me/vehicles")
+    def customer_vehicles(self, request):
+        """
+        Get vehicles for the authenticated customer user
+        Returns all vehicles owned by the customer
+        """
+        # Ensure user has customer role
+        if not hasattr(request.user, 'role') or request.user.role != 'customer':
+            return Response(
+                {
+                    'error': 'Access denied',
+                    'detail': 'This endpoint is only accessible to customers.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        try:
+            # Get the customer record for the authenticated user
+            customer = Customer.objects.get(user=request.user)
+            
+            # Filter vehicles for this customer
+            queryset = Vehicle.objects.filter(customer=customer).order_by('make', 'model', 'year')
+            
+            # Serialize vehicle data
+            serializer = VehicleSerializer(queryset, many=True)
+            
+            return Response({
+                'results': serializer.data,
+                'count': queryset.count(),
+                'customer_id': customer.id,
+                'customer_name': customer.name
+            })
+            
+        except Customer.DoesNotExist:
+            return Response(
+                {
+                    'error': 'No customer record found for this user',
+                    'detail': 'This user account is not linked to a customer record. Please contact support.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
     def get_permissions(self):
         """Role-based permissions for vehicles"""
@@ -394,6 +466,8 @@ class VehicleViewSet(BaseViewSet):
             return [IsAuthenticated()]  # Anyone can create vehicles
         elif self.action in ["update", "partial_update"]:
             return [IsAuthenticated(), IsCustomerOwnerOfObject()]
+        elif self.action == "customer_vehicles":
+            return [IsAuthenticated()]  # Customers can access their own vehicles
         else:
             return [IsAuthenticated(), IsOwnerOrEmployee()]
 
@@ -415,16 +489,57 @@ class VehicleProblemViewSet(BaseViewSet):
     ordering_fields = ["reported_date", "resolved"]
 
     def get_queryset(self):
-        """Filter vehicle problems based on user role"""
+        """Filter vehicle problems based on user role with enhanced filtering"""
+        base_queryset = VehicleProblem.objects.select_related(
+            "vehicle", "vehicle__customer"
+        ).all()
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return VehicleProblem.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see problems for their own vehicles
-            return VehicleProblem.objects.filter(
-                vehicle__customer=user.customer_profile
+            queryset = base_queryset.filter(
+                vehicle__customer=user.customer_profile  # type: ignore[attr-defined]
             )
-        return VehicleProblem.objects.none()
+        else:
+            queryset = base_queryset.none()
+
+        # Add vehicle_id filtering
+        vehicle_id = self.request.query_params.get("vehicle_id")
+        if vehicle_id:
+            queryset = queryset.filter(vehicle_id=vehicle_id)
+
+        # Add customer_id filtering
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(vehicle__customer_id=customer_id)
+
+        return queryset.order_by("-reported_date")
+
+    @action(detail=False, methods=["get"])
+    def by_vehicle(self, request, vehicle_id=None):
+        """Get problems for a specific vehicle"""
+        # Get vehicle_id from URL parameter or query parameter
+        if not vehicle_id:
+            vehicle_id = request.query_params.get("vehicle_id")
+        
+        if not vehicle_id:
+            return Response(
+                {"error": "vehicle_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        problems = self.get_queryset().filter(vehicle_id=vehicle_id)
+        serializer = self.get_serializer(problems, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def unresolved(self, request):
+        """Get unresolved problems"""
+        problems = self.get_queryset().filter(resolved=False)
+        serializer = self.get_serializer(problems, many=True)
+        return Response(serializer.data)
 
     def get_permissions(self):
         """Role-based permissions for vehicle problems"""
@@ -450,26 +565,118 @@ class VehicleProblemViewSet(BaseViewSet):
 # Appointment ViewSet
 # -------------------
 class AppointmentViewSet(BaseViewSet):
-    queryset = Appointment.objects.all()
-    serializer_class = AppointmentSerializer
+    queryset = Appointment.objects.all()  # Default queryset for router registration
+    serializer_class = AppointmentDetailSerializer
     permission_classes = [IsAuthenticated]
-    filterset_fields = ["vehicle", "date", "status"]
+    filterset_fields = ["vehicle", "date", "status", "vehicle__customer"]
     search_fields = [
         "vehicle__customer__name",
         "vehicle__make",
         "vehicle__model",
+        "description",
         "status",
     ]
     ordering_fields = ["date", "status"]
 
     def get_queryset(self):
-        """Filter appointments based on user role"""
+        """Filter appointments based on user role with optimized queries"""
+        base_queryset = Appointment.objects.select_related(
+            "vehicle__customer", "reported_problem"
+        ).prefetch_related("vehicle")
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return Appointment.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset.all()
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see their own appointments
-            return Appointment.objects.filter(vehicle__customer=user.customer_profile)
+            queryset = base_queryset.filter(vehicle__customer=user.customer_profile)  # type: ignore[attr-defined]
+        else:
+            # No appointments for unauthorized users
+            queryset = base_queryset.none()
+
+        # Additional filtering based on query parameters
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(vehicle__customer_id=customer_id)
+
+        vehicle_id = self.request.query_params.get("vehicle_id")
+        if vehicle_id:
+            queryset = queryset.filter(vehicle_id=vehicle_id)
+
+        status = self.request.query_params.get("status")
+        if status:
+            queryset = queryset.filter(status=status)
+
+        # Date range filtering - support both camelCase (frontend) and snake_case (backend) formats
+        date_from = self.request.query_params.get("dateFrom") or self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("dateTo") or self.request.query_params.get("date_to")
+        
+        if date_from:
+            from django.utils.dateparse import parse_date
+            parsed_date = parse_date(date_from)
+            if parsed_date:
+                queryset = queryset.filter(date__date__gte=parsed_date)
+        
+        if date_to:
+            from django.utils.dateparse import parse_date
+            parsed_date = parse_date(date_to)
+            if parsed_date:
+                queryset = queryset.filter(date__date__lte=parsed_date)
+
+        return queryset.order_by("-date")
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Get appointment statistics"""
+        from django.db.models import Count, Q
+        from django.utils import timezone
+        from datetime import date, timedelta
+
+        today = date.today()
+        this_month = today.replace(day=1)
+        now = timezone.now()
+
+        # Get base queryset respecting user permissions
+        base_queryset = self.get_queryset()
+
+        stats = {
+            "total_appointments": base_queryset.count(),
+            "todays_appointments": base_queryset.filter(date__date=today).count(),
+            "upcoming_appointments": base_queryset.filter(
+                date__gt=now, status__in=["pending", "in_progress"]
+            ).count(),
+            "completed_this_month": base_queryset.filter(
+                date__gte=this_month, status="completed"
+            ).count(),
+            "appointments_by_status": list(
+                base_queryset.values("status").annotate(count=Count("id"))
+            ),
+            "this_week_count": base_queryset.filter(
+                date__gte=today - timedelta(days=7), date__lt=today + timedelta(days=1)
+            ).count(),
+        }
+
+        return Response(stats)
+
+    @action(detail=False, methods=["get"])
+    def upcoming(self, request):
+        """Get upcoming appointments only"""
+        from django.utils import timezone
+
+        upcoming_appointments = (
+            self.get_queryset()
+            .filter(date__gt=timezone.now(), status__in=["pending", "in_progress"])
+            .order_by("date")
+        )
+
+        # Apply pagination
+        page = self.paginate_queryset(upcoming_appointments)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(upcoming_appointments, many=True)
+        return Response(serializer.data)
         return Appointment.objects.none()
 
     def get_permissions(self):
@@ -478,6 +685,8 @@ class AppointmentViewSet(BaseViewSet):
             return [IsAuthenticated()]
         elif self.action == "create":
             return [IsAuthenticated()]  # Anyone can create appointments
+        elif self.action == "customer_appointments":
+            return [IsAuthenticated()]  # Customers can access their own appointments
         else:
             return [IsAuthenticated(), IsOwnerOrEmployee()]
 
@@ -493,6 +702,121 @@ class AppointmentViewSet(BaseViewSet):
         )
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="my-assignments")
+    def my_assignments(self, request):
+        """
+        Get appointments assigned to the authenticated user's employee record
+        Supports status filtering: ?status=scheduled,in_progress
+        """
+        try:
+            # Get the employee record for the authenticated user
+            employee = Employee.objects.get(user=request.user)
+            
+            # Filter appointments assigned to this technician
+            queryset = Appointment.objects.select_related(
+                'vehicle__customer', 'reported_problem'
+            ).filter(
+                assigned_technician=employee
+            )
+            
+            # Support status filtering
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                # Handle comma-separated status values
+                status_list = [s.strip() for s in status_filter.split(',')]
+                queryset = queryset.filter(status__in=status_list)
+            
+            # Order by date
+            queryset = queryset.order_by('date')
+            
+            # Use AppointmentSerializer to ensure all technician fields are included
+            serializer = AppointmentSerializer(queryset, many=True)
+            
+            return Response({
+                'results': serializer.data,
+                'count': queryset.count()
+            })
+            
+        except Employee.DoesNotExist:
+            return Response(
+                {
+                    'error': 'No employee record found for this user',
+                    'detail': 'This user account is not linked to an employee record.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=False, methods=["get"], url_path="customers/me/appointments")
+    def customer_appointments(self, request):
+        """
+        Get appointments for the authenticated customer user
+        Supports status and date range filtering: ?status=scheduled,in_progress&dateFrom=2023-01-01&dateTo=2023-12-31
+        """
+        # Ensure user has customer role
+        if not hasattr(request.user, 'role') or request.user.role != 'customer':
+            return Response(
+                {
+                    'error': 'Access denied',
+                    'detail': 'This endpoint is only accessible to customers.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        try:
+            # Get the customer record for the authenticated user
+            customer = Customer.objects.get(user=request.user)
+            
+            # Filter appointments for this customer's vehicles
+            queryset = Appointment.objects.select_related(
+                'vehicle', 'vehicle__customer', 'reported_problem', 'assigned_technician__user'
+            ).filter(
+                vehicle__customer=customer
+            )
+            
+            # Support status filtering
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                status_list = [s.strip() for s in status_filter.split(',')]
+                queryset = queryset.filter(status__in=status_list)
+            
+            # Date range filtering
+            date_from = request.query_params.get("dateFrom") or request.query_params.get("date_from")
+            date_to = request.query_params.get("dateTo") or request.query_params.get("date_to")
+            
+            if date_from:
+                from django.utils.dateparse import parse_date
+                parsed_date = parse_date(date_from)
+                if parsed_date:
+                    queryset = queryset.filter(date__date__gte=parsed_date)
+            
+            if date_to:
+                from django.utils.dateparse import parse_date
+                parsed_date = parse_date(date_to)
+                if parsed_date:
+                    queryset = queryset.filter(date__date__lte=parsed_date)
+            
+            # Order by date (most recent first)
+            queryset = queryset.order_by('-date')
+            
+            # Use AppointmentSerializer with comprehensive data
+            serializer = AppointmentSerializer(queryset, many=True)
+            
+            return Response({
+                'results': serializer.data,
+                'count': queryset.count(),
+                'customer_id': customer.id,
+                'customer_name': customer.name
+            })
+            
+        except Customer.DoesNotExist:
+            return Response(
+                {
+                    'error': 'No customer record found for this user',
+                    'detail': 'This user account is not linked to a customer record. Please contact support.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
 
 # -------------------
@@ -511,15 +835,241 @@ class RepairOrderViewSet(BaseViewSet):
     ]
     ordering_fields = ["date_created", "total_cost"]
 
+    def get_serializer_class(self):
+        """Use different serializers for different actions"""
+        if self.action == 'create':
+            return CreateRepairOrderSerializer
+        return RepairOrderSerializer
+
     def get_queryset(self):
-        """Filter repair orders based on user role"""
+        """Filter repair orders based on user role with enhanced filtering"""
+        base_queryset = (
+            RepairOrder.objects.select_related("vehicle", "vehicle__customer")
+            .prefetch_related(
+                "repair_order_services__service",
+                "repair_order_parts__part",
+                "vehicle__appointments",
+            )
+            .all()
+        )
+
         user = self.request.user
-        if user.is_owner or user.is_employee:
-            return RepairOrder.objects.all()
-        elif user.is_customer and hasattr(user, "customer_profile"):
+        if user.is_owner or user.is_employee:  # type: ignore[attr-defined]
+            queryset = base_queryset
+        elif user.is_customer and hasattr(user, "customer_profile"):  # type: ignore[attr-defined]
             # Customers can only see their own repair orders
-            return RepairOrder.objects.filter(vehicle__customer=user.customer_profile)
-        return RepairOrder.objects.none()
+            queryset = base_queryset.filter(vehicle__customer=user.customer_profile)  # type: ignore[attr-defined]
+        else:
+            queryset = base_queryset.none()
+
+        # Add filtering options
+        customer_id = self.request.query_params.get("customer_id")
+        if customer_id:
+            queryset = queryset.filter(vehicle__customer_id=customer_id)
+
+        vehicle_id = self.request.query_params.get("vehicle_id")
+        if vehicle_id:
+            queryset = queryset.filter(vehicle_id=vehicle_id)
+
+        # Status filtering - filter by appointment status
+        status = self.request.query_params.get("status")
+        if status:
+            # Support multiple statuses: ?status=pending,in_progress
+            status_list = status.split(',')
+            # Filter repair orders by the status of their most recent appointments
+            queryset = queryset.filter(vehicle__appointments__status__in=status_list).distinct()
+
+        # Date range filtering
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        if date_from:
+            queryset = queryset.filter(date_created__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date_created__date__lte=date_to)
+
+        return queryset.order_by("-date_created")
+
+    @action(detail=False, methods=["get"])
+    def by_customer(self, request, customer_id=None):
+        """Get repair orders for a specific customer"""
+        # Get customer_id from URL parameter or query parameter
+        if not customer_id:
+            customer_id = request.query_params.get("customer_id")
+        
+        if not customer_id:
+            return Response(
+                {"error": "customer_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        orders = self.get_queryset().filter(vehicle__customer_id=customer_id)
+        serializer = self.get_serializer(orders, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def by_vehicle(self, request, vehicle_id=None):
+        """Get repair orders for a specific vehicle"""
+        # Get vehicle_id from URL parameter or query parameter
+        if not vehicle_id:
+            vehicle_id = request.query_params.get("vehicle_id")
+        
+        if not vehicle_id:
+            return Response(
+                {"error": "vehicle_id parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        orders = self.get_queryset().filter(vehicle_id=vehicle_id)
+        serializer = self.get_serializer(orders, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def active(self, request):
+        """Get active repair orders (where most recent appointment is active)
+        
+        A repair order is considered active if its most recent appointment
+        has an active status (pending, in_progress). This logic matches
+        the status computation in RepairOrderSerializer.get_status().
+        """
+        active_statuses = ["pending", "in_progress"]
+        active_orders = []
+        
+        # Get all repair orders and check their computed status
+        for order in self.get_queryset():
+            try:
+                # Get the most recent appointment for this vehicle
+                most_recent_appointment = order.vehicle.appointments.order_by('-date').first()
+                if most_recent_appointment and most_recent_appointment.status in active_statuses:
+                    active_orders.append(order)
+            except Exception:
+                # Skip orders without appointments or with errors
+                continue
+        
+        # Convert to queryset for consistent behavior
+        if active_orders:
+            order_ids = [order.id for order in active_orders]
+            orders_queryset = self.get_queryset().filter(id__in=order_ids).order_by('-date_created')
+        else:
+            orders_queryset = self.get_queryset().none()
+        
+        serializer = self.get_serializer(orders_queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Get repair order statistics"""
+        from django.db.models import Count, Sum, Avg
+        from datetime import date, timedelta
+
+        queryset = self.get_queryset()
+        today = date.today()
+        this_month = today.replace(day=1)
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Get repair order statistics"""
+        from django.db.models import Count, Sum, Avg
+        from datetime import date, timedelta
+
+        queryset = self.get_queryset()
+        today = date.today()
+        this_month = today.replace(day=1)
+
+        stats = {
+            "total_orders": queryset.count(),
+            "active_orders": queryset.filter(
+                vehicle__appointments__status__in=["pending", "in_progress"]
+            )
+            .distinct()
+            .count(),
+            "completed_orders": queryset.filter(
+                vehicle__appointments__status="completed"
+            )
+            .distinct()
+            .count(),
+            "total_revenue": queryset.filter(vehicle__appointments__status="completed")
+            .distinct()
+            .aggregate(total=Sum("total_cost"))["total"]
+            or 0,
+            "average_order_value": queryset.filter(
+                vehicle__appointments__status="completed"
+            )
+            .distinct()
+            .aggregate(avg=Avg("total_cost"))["avg"]
+            or 0,
+            "orders_this_month": queryset.filter(
+                date_created__date__gte=this_month
+            ).count(),
+            "orders_by_appointment_status": list(
+                queryset.values("vehicle__appointments__status")
+                .annotate(count=Count("id", distinct=True))
+                .filter(vehicle__appointments__status__isnull=False)
+            ),
+        }
+
+        return Response(stats)
+
+    @action(detail=False, methods=["get"], url_path="customers/me/repair-orders")
+    def customer_repair_orders(self, request):
+        """
+        Get repair orders for the authenticated customer user
+        Supports status filtering: ?status=pending,in_progress,completed
+        """
+        # Ensure user has customer role
+        if not hasattr(request.user, 'role') or request.user.role != 'customer':
+            return Response(
+                {
+                    'error': 'Access denied',
+                    'detail': 'This endpoint is only accessible to customers.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        try:
+            # Get the customer record for the authenticated user
+            customer = Customer.objects.get(user=request.user)
+            
+            # Filter repair orders for this customer's vehicles
+            queryset = RepairOrder.objects.select_related(
+                'vehicle', 'vehicle__customer'
+            ).prefetch_related(
+                'repair_order_services__service',
+                'repair_order_parts__part',
+                'vehicle__appointments'
+            ).filter(
+                vehicle__customer=customer
+            )
+            
+            # Support status filtering based on appointment status
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                status_list = [s.strip() for s in status_filter.split(',')]
+                # Filter by most recent appointment status
+                queryset = queryset.filter(
+                    vehicle__appointments__status__in=status_list
+                ).distinct()
+            
+            # Order by date created (most recent first)
+            queryset = queryset.order_by('-date_created')
+            
+            # Use RepairOrderSerializer for comprehensive data
+            serializer = RepairOrderSerializer(queryset, many=True)
+            
+            return Response({
+                'results': serializer.data,
+                'count': queryset.count(),
+                'customer_id': customer.id,
+                'customer_name': customer.name
+            })
+            
+        except Customer.DoesNotExist:
+            return Response(
+                {
+                    'error': 'No customer record found for this user',
+                    'detail': 'This user account is not linked to a customer record. Please contact support.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
     def get_permissions(self):
         """Role-based permissions for repair orders"""
@@ -527,6 +1077,8 @@ class RepairOrderViewSet(BaseViewSet):
             return [IsAuthenticated()]
         elif self.action == "create":
             return [IsAuthenticated(), CanCreateRepairOrders()]
+        elif self.action == "customer_repair_orders":
+            return [IsAuthenticated()]  # Customers can access their own repair orders
         else:
             return [IsAuthenticated(), CanCreateRepairOrders()]
 
@@ -553,6 +1105,192 @@ class RepairOrderViewSet(BaseViewSet):
         }
 
         return Response(summary)
+
+    @action(detail=True, methods=["post"])
+    def complete(self, request, pk=None):
+        """Complete a repair order using existing database fields only"""
+        repair_order = self.get_object()
+
+        # Calculate costs using existing relationships
+        try:
+            # Calculate labor costs from associated services
+            labor_total = sum(
+                ros.service.labor_cost
+                for ros in repair_order.repairorderservice_set.all()  # type: ignore
+            )
+
+            # Calculate parts costs from associated parts
+            parts_total = sum(
+                rop.part.unit_price * rop.quantity
+                for rop in repair_order.repairorderpart_set.all()  # type: ignore
+            )
+
+            # Calculate final total using existing fields
+            subtotal = labor_total + parts_total
+
+            # Apply existing discount
+            discount_value = repair_order.discount_amount
+            if repair_order.discount_percent > 0:
+                discount_value += (subtotal * repair_order.discount_percent) / 100
+
+            # Apply existing tax
+            taxable_amount = subtotal - discount_value
+            tax_value = (taxable_amount * repair_order.tax_percent) / 100
+
+            final_total = subtotal - discount_value + tax_value
+
+            # Update only existing fields
+            repair_order.total_cost = final_total
+            repair_order.notes = request.data.get(
+                "completion_notes", repair_order.notes
+            )
+            repair_order.save()
+
+            # Update related appointment status to completed
+            appointment_id = request.data.get("appointment_id")
+            if appointment_id:
+                try:
+                    appointment = Appointment.objects.get(
+                        id=appointment_id, vehicle=repair_order.vehicle
+                    )
+                    appointment.status = "completed"
+                    appointment.save()
+                except Appointment.DoesNotExist:
+                    pass
+            else:
+                # Complete pending appointments for this vehicle
+                pending_appointments = Appointment.objects.filter(
+                    vehicle=repair_order.vehicle, status="pending"
+                )
+                if pending_appointments.exists():
+                    latest = pending_appointments.order_by("-date").first()
+                    latest.status = "completed"  # type: ignore
+                    latest.save()  # type: ignore
+
+            return Response(
+                {
+                    "message": "Repair order completed successfully",
+                    "repair_order_id": repair_order.id,
+                    "cost_breakdown": {
+                        "labor_cost": str(labor_total),
+                        "parts_cost": str(parts_total),
+                        "subtotal": str(subtotal),
+                        "discount_amount": str(discount_value),
+                        "tax_amount": str(tax_value),
+                        "final_total": str(final_total),
+                    },
+                }
+            )
+
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to complete repair order: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=["get"], url_path="cost-breakdown")
+    def cost_breakdown(self, request, pk=None):
+        """Get cost breakdown using existing database fields only"""
+        repair_order = self.get_object()
+
+        # Calculate live costs from current associations
+        labor_costs = []
+        parts_costs = []
+
+        # Labor breakdown from services
+        for service_relation in repair_order.repairorderservice_set.all():  # type: ignore
+            labor_costs.append(
+                {
+                    "service_name": service_relation.service.name,
+                    "service_description": service_relation.service.description,
+                    "labor_cost": str(service_relation.service.labor_cost),
+                }
+            )
+
+        # Parts breakdown
+        for part_relation in repair_order.repairorderpart_set.all():  # type: ignore
+            parts_costs.append(
+                {
+                    "part_name": part_relation.part.name,
+                    "part_number": part_relation.part.part_number,
+                    "quantity": part_relation.quantity,
+                    "unit_price": str(part_relation.part.unit_price),
+                    "total_price": str(
+                        part_relation.part.unit_price * part_relation.quantity
+                    ),
+                }
+            )
+
+        # Calculate totals
+        labor_total = sum(float(item["labor_cost"]) for item in labor_costs)
+        parts_total = sum(float(item["total_price"]) for item in parts_costs)
+        subtotal = labor_total + parts_total
+
+        # Use existing discount and tax fields
+        discount_value = float(repair_order.discount_amount)
+        if repair_order.discount_percent > 0:
+            discount_value += (subtotal * float(repair_order.discount_percent)) / 100
+
+        taxable_amount = subtotal - discount_value
+        tax_value = (taxable_amount * float(repair_order.tax_percent)) / 100
+        final_total = subtotal - discount_value + tax_value
+
+        return Response(
+            {
+                "repair_order_id": repair_order.id,
+                "vehicle": {
+                    "id": repair_order.vehicle.id,
+                    "make": repair_order.vehicle.make,
+                    "model": repair_order.vehicle.model,
+                    "license_plate": repair_order.vehicle.license_plate,
+                },
+                "labor_costs": labor_costs,
+                "parts_costs": parts_costs,
+                "totals": {
+                    "labor_total": f"{labor_total:.2f}",
+                    "parts_total": f"{parts_total:.2f}",
+                    "subtotal": f"{subtotal:.2f}",
+                    "discount_amount": str(repair_order.discount_amount),
+                    "discount_percent": str(repair_order.discount_percent),
+                    "tax_percent": str(repair_order.tax_percent),
+                    "tax_amount": f"{tax_value:.2f}",
+                    "final_total": f"{final_total:.2f}",
+                    "current_total_cost": str(repair_order.total_cost),
+                },
+                "related_appointments": [
+                    {
+                        "id": apt.id,
+                        "description": apt.description,
+                        "date": apt.date.isoformat(),
+                        "status": apt.status,
+                    }
+                    for apt in Appointment.objects.filter(vehicle=repair_order.vehicle)
+                ],
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path="related-appointments")
+    def related_appointments(self, request, pk=None):
+        """Get appointments for the same vehicle as this repair order"""
+        repair_order = self.get_object()
+        appointments = Appointment.objects.filter(vehicle=repair_order.vehicle)
+
+        return Response(
+            {
+                "repair_order_id": repair_order.id,
+                "vehicle_id": repair_order.vehicle.id,
+                "appointments": [
+                    {
+                        "id": apt.id,
+                        "description": apt.description,
+                        "date": apt.date.isoformat(),
+                        "status": apt.status,
+                        "reported_problem_id": apt.reported_problem_id,
+                    }
+                    for apt in appointments
+                ],
+            }
+        )
 
 
 # -------------------
@@ -626,3 +1364,320 @@ class RepairOrderServiceViewSet(BaseViewSet):
 #         'refresh': str(refresh),
 #         'access': str(refresh.access_token),
 #     }
+
+
+# -------------------
+# Shop Statistics API
+# -------------------
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def shop_stats(request):
+    """
+    Get aggregate statistics across all shops in the system.
+    Only accessible by employees and owners (not customers).
+    """
+    # Check user permissions - only employees and owners
+    if request.user.role == "customer":
+        return Response({"error": "Access denied"}, status=403)
+
+    from django.db.models import Sum, Count, Avg
+    from django.utils import timezone
+    from datetime import datetime
+    import calendar
+
+    # Get current month start
+    now = timezone.now()
+    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Shop metrics
+    total_shops = Shop.objects.count()
+    active_shops = Shop.objects.filter(is_active=True).count()
+    total_bays = Shop.objects.aggregate(total=Sum("bay_count"))["total"] or 0
+
+    # Calculate available bays (bays not currently occupied by in-progress appointments)
+    occupied_bays = Appointment.objects.filter(status="in_progress").count()
+    available_bays = max(0, total_bays - occupied_bays)
+
+    # Calculate utilization rate
+    utilization_rate = round(
+        ((total_bays - available_bays) / total_bays * 100) if total_bays > 0 else 0.0, 1
+    )
+
+    # Monthly appointments
+    monthly_appointments = Appointment.objects.filter(
+        date__gte=current_month_start
+    ).count()
+
+    # Monthly revenue from completed repair orders
+    monthly_revenue = (
+        RepairOrder.objects.filter(date_created__gte=current_month_start).aggregate(
+            total=Sum("total_cost")
+        )["total"]
+        or 0
+    )
+
+    # Average rating (placeholder - you may need to add a rating system)
+    # For now, using a calculated average based on appointment completion
+    total_appointments = Appointment.objects.count()
+    completed_appointments = Appointment.objects.filter(status="completed").count()
+    average_rating = round(
+        (
+            (completed_appointments / total_appointments * 5.0)
+            if total_appointments > 0
+            else 0.0
+        ),
+        1,
+    )
+
+    # Top services this month
+    top_services_queryset = (
+        Service.objects.filter(
+            repairorderservice__repair_order__date_created__gte=current_month_start
+        )
+        .annotate(count=Count("repairorderservice__repair_order"))
+        .order_by("-count")[:5]
+    )
+
+    top_services = [
+        {"service": service.name, "count": service.count}
+        for service in top_services_queryset
+    ]
+
+    stats = {
+        "total_shops": total_shops,
+        "active_shops": active_shops,
+        "total_bays": total_bays,
+        "available_bays": available_bays,
+        "utilization_rate": utilization_rate,
+        "monthly_appointments": monthly_appointments,
+        "monthly_revenue": float(monthly_revenue),
+        "average_rating": average_rating,
+        "top_services": top_services,
+    }
+
+    return Response(stats)
+
+
+# ================================
+# TECHNICIAN ALLOCATION ENDPOINTS
+# ================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def assign_technician(request, appointment_id):
+    """
+    Assign a technician to an appointment
+    
+    POST /api/shop/appointments/{id}/assign-technician/
+    Body: {"technician_id": 5}
+    """
+    from django.shortcuts import get_object_or_404
+    from django.utils import timezone
+    
+    appointment = get_object_or_404(Appointment, id=appointment_id)
+    technician_id = request.data.get('technician_id')
+    
+    if not technician_id:
+        return Response(
+            {'error': 'technician_id is required'}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    technician = get_object_or_404(Employee, id=technician_id)
+    
+    # Check if technician is available
+    if not technician.is_available:
+        return Response({
+            'error': f'Technician {technician.name} is not available',
+            'current_workload': technician.workload_count,
+            'max_workload': 3
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Assign the technician
+    appointment.assign_technician(technician)
+    
+    # Return updated appointment data
+    serializer = AppointmentSerializer(appointment)
+    
+    return Response({
+        'message': 'Technician assigned successfully',
+        'appointment': serializer.data,
+        'technician': {
+            'id': technician.id,
+            'name': technician.name,
+            'role': technician.role
+        },
+        'assignment_details': {
+            'assigned_at': appointment.assigned_at,
+            'status': appointment.status,
+            'previous_status': 'pending'
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def start_work(request, appointment_id):
+    """
+    Mark appointment work as started (status: assigned → in_progress)
+    
+    POST /api/shop/appointments/{id}/start-work/
+    """
+    from django.shortcuts import get_object_or_404
+    
+    appointment = get_object_or_404(Appointment, id=appointment_id)
+    
+    if not appointment.assigned_technician:
+        return Response({
+            'error': 'No technician assigned to this appointment'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    if appointment.status != 'assigned':
+        return Response({
+            'error': f'Cannot start work. Current status: {appointment.status}',
+            'valid_status_for_start': 'assigned'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Start the work
+    previous_status = appointment.status
+    appointment.start_work()
+    
+    serializer = AppointmentSerializer(appointment)
+    
+    return Response({
+        'message': 'Work started successfully',
+        'appointment': serializer.data,
+        'work_details': {
+            'started_at': appointment.started_at,
+            'status': appointment.status,
+            'previous_status': previous_status,
+            'technician': appointment.assigned_technician.name
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def complete_work(request, appointment_id):
+    """
+    Mark appointment work as completed (status: in_progress → completed)
+    
+    POST /api/shop/appointments/{id}/complete-work/
+    """
+    from django.shortcuts import get_object_or_404
+    
+    appointment = get_object_or_404(Appointment, id=appointment_id)
+    
+    if appointment.status != 'in_progress':
+        return Response({
+            'error': f'Cannot complete work. Current status: {appointment.status}',
+            'valid_status_for_completion': 'in_progress'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Complete the work
+    previous_status = appointment.status
+    appointment.complete_work()
+    
+    serializer = AppointmentSerializer(appointment)
+    
+    return Response({
+        'message': 'Work completed successfully',
+        'appointment': serializer.data,
+        'completion_details': {
+            'completed_at': appointment.completed_at,
+            'status': appointment.status,
+            'previous_status': previous_status,
+            'technician': appointment.assigned_technician.name,
+            'total_work_time': str(appointment.completed_at - appointment.started_at) if appointment.started_at else None
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def technician_workload(request):
+    """
+    Get workload information for all technicians
+    
+    GET /api/shop/technicians/workload/
+    """
+    technicians = Employee.objects.filter(
+        role__icontains='technician'
+    ).select_related('shop')
+    
+    workload_data = []
+    
+    for tech in technicians:
+        current_appointments = tech.current_appointments
+        today_appointments = tech.appointments_today
+        
+        workload_data.append({
+            'technician': {
+                'id': tech.id,
+                'name': tech.name,
+                'role': tech.role,
+                'shop': tech.shop.name
+            },
+            'workload': {
+                'current_appointments': tech.workload_count,
+                'is_available': tech.is_available,
+                'appointments_today': today_appointments.count(),
+                'max_capacity': 3
+            },
+            'current_jobs': [
+                {
+                    'appointment_id': apt.id,
+                    'vehicle': f"{apt.vehicle.make} {apt.vehicle.model}",
+                    'customer': apt.vehicle.customer.name,
+                    'status': apt.status,
+                    'assigned_at': apt.assigned_at,
+                    'started_at': apt.started_at
+                } for apt in current_appointments
+            ]
+        })
+    
+    # Summary statistics
+    total_technicians = len(workload_data)
+    available_technicians = len([t for t in workload_data if t['workload']['is_available']])
+    busy_technicians = total_technicians - available_technicians
+    
+    return Response({
+        'summary': {
+            'total_technicians': total_technicians,
+            'available_technicians': available_technicians,
+            'busy_technicians': busy_technicians,
+            'utilization_rate': f"{(busy_technicians/total_technicians*100):.1f}%" if total_technicians > 0 else "0%"
+        },
+        'technicians': workload_data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def available_technicians(request):
+    """
+    Get list of available technicians for assignment
+    
+    GET /api/shop/technicians/available/
+    """
+    available_techs = Employee.objects.filter(
+        role__icontains='technician'
+    ).select_related('shop')
+    
+    available_list = []
+    
+    for tech in available_techs:
+        if tech.is_available:
+            available_list.append({
+                'id': tech.id,
+                'name': tech.name,
+                'role': tech.role,
+                'current_workload': tech.workload_count,
+                'max_capacity': 3,
+                'appointments_today': tech.appointments_today.count()
+            })
+    
+    return Response({
+        'message': f'Found {len(available_list)} available technicians',
+        'available_technicians': available_list
+    }, status=status.HTTP_200_OK)
