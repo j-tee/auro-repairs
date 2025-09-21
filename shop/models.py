@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from decimal import Decimal
 
 # Create your models here.
@@ -11,6 +12,12 @@ class Shop(models.Model):
     address = models.CharField(max_length=255)
     phone = models.CharField(max_length=20)
     email = models.EmailField(blank=True, null=True)
+    bay_count = models.PositiveIntegerField(
+        default=4, help_text="Number of service bays"
+    )
+    is_active = models.BooleanField(
+        default=True, help_text="Whether shop is operational"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -40,6 +47,60 @@ class Employee(models.Model):
         blank=True,
         null=True,
     )
+
+    # 🎯 WORKLOAD MANAGEMENT PROPERTIES
+    @property
+    def current_appointments(self):
+        """Get appointments currently assigned to this technician"""
+        return self.assigned_appointments.filter(
+            status__in=["assigned", "in_progress"]
+        )
+
+    @property
+    def workload_count(self):
+        """Number of active appointments assigned to this technician"""
+        return self.current_appointments.count()
+
+    @property
+    def is_available(self):
+        """Check if technician is available for new assignments"""
+        # Configurable threshold - technicians can handle max 3 concurrent jobs
+        return self.workload_count < 3
+
+    @property
+    def appointments_today(self):
+        """Get today's appointments for this technician"""
+        today = timezone.now().date()
+        return self.assigned_appointments.filter(date__date=today)
+
+    @property
+    def current_jobs(self):
+        """Get current job assignments with detailed information for frontend"""
+        appointments = self.current_appointments
+        jobs = []
+        
+        for appointment in appointments:
+            # Get customer through vehicle relationship
+            customer_name = appointment.vehicle.customer.name if appointment.vehicle and appointment.vehicle.customer else 'Unknown Customer'
+            vehicle_info = f"{appointment.vehicle.make} {appointment.vehicle.model}" if appointment.vehicle else 'Unknown Vehicle'
+            
+            job_data = {
+                'appointment_id': appointment.id,
+                'customer_name': customer_name,
+                'vehicle': vehicle_info,
+                'service_type': 'General Repair',  # Will be enhanced when service relationship is added
+                'status': appointment.status,
+                'started_at': appointment.date,
+                'estimated_completion': None  # Could be calculated based on service duration
+            }
+            jobs.append(job_data)
+        
+        return jobs
+
+    @property
+    def is_technician(self):
+        """Check if this employee is a technician"""
+        return "technician" in self.role.lower() or "mechanic" in self.role.lower()
 
     def __str__(self):
         return f"{self.name} - {self.shop.name}"
@@ -153,16 +214,68 @@ class Appointment(models.Model):
     )
     description = models.TextField(blank=True, null=True)  # Optional notes by customer
     date = models.DateTimeField()
+    
+    # 🎯 TECHNICIAN ALLOCATION FIELDS
+    assigned_technician = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_appointments",
+        help_text="Technician assigned to work on this appointment"
+    )
+    assigned_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the technician was assigned"
+    )
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When work actually began"
+    )
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When work was completed"
+    )
+    
     status = models.CharField(
         max_length=20,
         choices=[
-            ("pending", "Pending"),
-            ("in_progress", "In Progress"),
-            ("completed", "Completed"),
-            ("cancelled", "Cancelled"),
+            ("pending", "Pending"),          # Customer booked appointment (initial status)
+            ("assigned", "Assigned"),        # Technician assigned but not started
+            ("in_progress", "In Progress"),  # Work has begun
+            ("completed", "Completed"),      # Work finished
+            ("cancelled", "Cancelled"),      # Appointment cancelled
         ],
         default="pending",
     )
+
+    def assign_technician(self, technician):
+        """Assign a technician and update status to assigned"""
+        self.assigned_technician = technician
+        self.assigned_at = timezone.now()
+        if self.status == "pending":
+            self.status = "assigned"
+        self.save()
+        return self
+
+    def start_work(self):
+        """Mark work as started - status becomes in_progress"""
+        if self.assigned_technician and self.status == "assigned":
+            self.started_at = timezone.now()
+            self.status = "in_progress"
+            self.save()
+        return self
+
+    def complete_work(self):
+        """Mark work as completed"""
+        if self.status == "in_progress":
+            self.completed_at = timezone.now()
+            self.status = "completed"
+            self.save()
+        return self
 
     def __str__(self):
         problem = (
@@ -170,19 +283,17 @@ class Appointment(models.Model):
             if self.reported_problem
             else "No problem reported"
         )
-        return f"{self.vehicle.customer.name} - {self.vehicle} - {problem}"
+        tech_info = f" [Tech: {self.assigned_technician.name}]" if self.assigned_technician else ""
+        return f"{self.vehicle.customer.name} - {self.vehicle} - {problem}{tech_info}"
 
 
 # -------------------
 # Repair Orders
 # -------------------
 class RepairOrder(models.Model):
+    # EXISTING DATABASE FIELDS (DO NOT CHANGE)
     vehicle = models.ForeignKey(
         Vehicle, on_delete=models.CASCADE, related_name="repair_orders"
-    )
-    services = models.ManyToManyField(Service, through="RepairOrderService")
-    parts = models.ManyToManyField(
-        Part, through="RepairOrderPart", related_name="repair_orders"
     )
     discount_amount = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0.00")
@@ -191,7 +302,7 @@ class RepairOrder(models.Model):
         max_digits=5, decimal_places=2, default=Decimal("0.00")
     )
     tax_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal("0.00")
+        max_digits=5, decimal_places=2, default=Decimal("8.25")
     )
     total_cost = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0.00")
@@ -199,24 +310,57 @@ class RepairOrder(models.Model):
     date_created = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True, null=True)
 
+    # Many-to-many relationships through intermediate models
+    services = models.ManyToManyField(Service, through="RepairOrderService")
+    parts = models.ManyToManyField(
+        Part, through="RepairOrderPart", related_name="repair_orders"
+    )
+
+    # COMPUTED PROPERTIES (no database fields)
+    @property
+    def customer(self):
+        """Get customer through vehicle relationship"""
+        return self.vehicle.customer
+
+    @property
+    def is_completed(self):
+        """Check if any related appointments are completed"""
+        return self.vehicle.appointments.filter(status="completed").exists()  # type: ignore
+
+    @property
+    def related_appointments(self):
+        """Get all appointments for the same vehicle"""
+        return self.vehicle.appointments.all()  # type: ignore
+
     def calculate_total_cost(self):
-        labor_total = sum(s.labor_cost for s in self.services.all())
-        parts_total = sum(
-            item.part.unit_price * item.quantity for item in self.repair_order_parts.all()  # type: ignore[attr-defined]
+        # Calculate labor costs from services through RepairOrderService
+        labor_total = sum(
+            ros.service.labor_cost for ros in self.repair_order_services.all()  # type: ignore
         )
+
+        # Calculate parts costs from parts through RepairOrderPart
+        parts_total = sum(
+            item.part.unit_price * item.quantity
+            for item in self.repair_order_parts.all()  # type: ignore
+        )
+
         subtotal = labor_total + parts_total
 
-        discount_value = Decimal("0.00")
+        # Calculate discount
+        discount_value = self.discount_amount
         if self.discount_percent > 0:
-            discount_value = (subtotal * self.discount_percent) / Decimal("100")
-        elif self.discount_amount > 0:
-            discount_value = self.discount_amount
+            discount_value += (subtotal * self.discount_percent) / Decimal("100")
 
+        # Calculate tax on taxable items
         taxable_services_total = sum(
-            s.labor_cost for s in self.services.all() if s.taxable
+            ros.service.labor_cost
+            for ros in self.repair_order_services.all()  # type: ignore
+            if ros.service.taxable
         )
         taxable_parts_total = sum(
-            item.part.unit_price * item.quantity for item in self.repair_order_parts.all() if item.part.taxable  # type: ignore[attr-defined]
+            item.part.unit_price * item.quantity
+            for item in self.repair_order_parts.all()  # type: ignore
+            if item.part.taxable
         )
         taxable_amount = (taxable_services_total + taxable_parts_total) - discount_value
         tax_value = (
@@ -229,7 +373,6 @@ class RepairOrder(models.Model):
 
     def save(self, *args, **kwargs):
         # Only calculate total cost if the object already exists (has an ID)
-        # or if specifically requested
         skip_calculation = kwargs.pop("skip_calculation", False)
         if not skip_calculation and self.pk is not None:
             self.total_cost = self.calculate_total_cost()

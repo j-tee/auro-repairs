@@ -1,0 +1,11 @@
+ id |                        description                        |             date              |  status   | reported_problem_id | vehicle_id 
+----+-----------------------------------------------------------+-------------------------------+-----------+---------------------+------------
+ 27 | Scheduled maintenance and inspection for Toyota Camry     | 2025-08-23 11:51:29.742669+00 | pending   |                  30 |         27
+ 28 | Scheduled maintenance and inspection for Honda Civic      | 2025-08-30 11:51:29.753732+00 | completed |                     |         28
+ 29 | Scheduled maintenance and inspection for Ford F-150       | 2025-09-17 11:51:29.765024+00 | pending   |                  29 |         29
+ 30 | Scheduled maintenance and inspection for Chevrolet Malibu | 2025-08-29 11:51:29.776008+00 | completed |                  31 |         30
+ 31 | Scheduled maintenance and inspection for Nissan Altima    | 2025-09-05 11:51:29.787079+00 | pending   |                  28 |         31
+ 32 | Scheduled maintenance and inspection for BMW 3 Series     | 2025-09-15 11:51:29.798217+00 | completed |                  29 |         32
+ 33 | Scheduled maintenance and inspection for Audi A4          | 2025-09-18 11:51:29.809361+00 | pending   |                  31 |         33
+(7 rows)
+

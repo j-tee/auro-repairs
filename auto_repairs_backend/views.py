@@ -145,6 +145,84 @@ def get_user_profile(request):
 
 
 @api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_employee_profile(request):
+    """
+    Get Employee record linked to the authenticated User for technician dashboard
+    Maps authenticated User ID to Employee ID for filtering appointments
+    """
+    from shop.models import Employee
+    from shop.serializers import EmployeeSerializer
+    
+    try:
+        # Find employee record linked to the authenticated user
+        employee = Employee.objects.select_related('shop').get(user=request.user)
+        
+        response_data = {
+            "user_id": request.user.id,
+            "employee": {
+                "id": employee.id,
+                "name": employee.name,
+                "role": employee.role,
+                "email": employee.email,
+                "phone": employee.phone_number,
+                "shop": {
+                    "id": employee.shop.id,
+                    "name": employee.shop.name
+                } if employee.shop else None
+            }
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Employee.DoesNotExist:
+        return Response(
+            {
+                "error": "No employee record found for this user",
+                "detail": "This user account is not linked to an employee record. Contact your administrator."
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_customer_profile(request):
+    """
+    Get Customer record linked to the authenticated User for customer dashboard
+    Maps authenticated User ID to Customer ID and provides customer information
+    """
+    from shop.models import Customer
+    
+    try:
+        # Find customer record linked to the authenticated user
+        customer = Customer.objects.get(user=request.user)
+        
+        response_data = {
+            "user_id": request.user.id,
+            "customer": {
+                "id": customer.id,
+                "name": customer.name,
+                "email": customer.email,
+                "phone": customer.phone_number,
+                "address": customer.address
+            },
+            "user_role": request.user.role
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Customer.DoesNotExist:
+        return Response(
+            {
+                "error": "No customer record found for this user",
+                "detail": "This user account is not linked to a customer record. Please contact support."
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+
+@api_view(["GET"])
 @permission_classes([IsOwner])
 def list_users(request):
     """
@@ -194,3 +272,69 @@ def update_user_role(request, user_id):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsOwner])
+def get_user_stats(request):
+    """
+    Get comprehensive user statistics (only accessible by owners)
+    Returns user count totals, role distribution, verification rates, and recent activity
+    """
+    from django.db.models import Count, Q
+    from django.utils import timezone
+    from datetime import timedelta
+
+    # Get total user count
+    total_users = User.objects.count()
+    
+    # Get role distribution
+    role_stats = {
+        "owners": User.objects.filter(role=User.OWNER).count(),
+        "employees": User.objects.filter(role=User.EMPLOYEE).count(),
+        "customers": User.objects.filter(role=User.CUSTOMER).count(),
+    }
+    
+    # Get email verification stats
+    verified_users = User.objects.filter(is_email_verified=True).count()
+    unverified_users = total_users - verified_users
+    verification_rate = (verified_users / total_users * 100) if total_users > 0 else 0
+    
+    # Get active user stats (users who have logged in recently)
+    thirty_days_ago = timezone.now() - timedelta(days=30)
+    active_users = User.objects.filter(last_login__gte=thirty_days_ago).count()
+    
+    # Get recent registrations (last 30 days)
+    recent_registrations = User.objects.filter(date_joined__gte=thirty_days_ago).count()
+    
+    # Calculate percentages for role distribution
+    role_percentages = {}
+    if total_users > 0:
+        role_percentages = {
+            "owners": (role_stats["owners"] / total_users * 100),
+            "employees": (role_stats["employees"] / total_users * 100),
+            "customers": (role_stats["customers"] / total_users * 100),
+        }
+    
+    stats_data = {
+        "total_users": total_users,
+        "role_distribution": {
+            "counts": role_stats,
+            "percentages": role_percentages,
+        },
+        "email_verification": {
+            "verified_count": verified_users,
+            "unverified_count": unverified_users,
+            "verification_rate": round(verification_rate, 2),
+        },
+        "activity": {
+            "active_users_30_days": active_users,
+            "recent_registrations_30_days": recent_registrations,
+        },
+        "summary": {
+            "active_rate": round((active_users / total_users * 100), 2) if total_users > 0 else 0,
+            "growth_rate": round((recent_registrations / total_users * 100), 2) if total_users > 0 else 0,
+        }
+    }
+    
+    return Response(stats_data, status=status.HTTP_200_OK)
