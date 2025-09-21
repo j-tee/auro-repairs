@@ -416,48 +416,6 @@ class VehicleViewSet(BaseViewSet):
         serializer = self.get_serializer(vehicles, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=["get"], url_path="customers/me/vehicles")
-    def customer_vehicles(self, request):
-        """
-        Get vehicles for the authenticated customer user
-        Returns all vehicles owned by the customer
-        """
-        # Ensure user has customer role
-        if not hasattr(request.user, 'role') or request.user.role != 'customer':
-            return Response(
-                {
-                    'error': 'Access denied',
-                    'detail': 'This endpoint is only accessible to customers.'
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-            
-        try:
-            # Get the customer record for the authenticated user
-            customer = Customer.objects.get(user=request.user)
-            
-            # Filter vehicles for this customer
-            queryset = Vehicle.objects.filter(customer=customer).order_by('make', 'model', 'year')
-            
-            # Serialize vehicle data
-            serializer = VehicleSerializer(queryset, many=True)
-            
-            return Response({
-                'results': serializer.data,
-                'count': queryset.count(),
-                'customer_id': customer.id,
-                'customer_name': customer.name
-            })
-            
-        except Customer.DoesNotExist:
-            return Response(
-                {
-                    'error': 'No customer record found for this user',
-                    'detail': 'This user account is not linked to a customer record. Please contact support.'
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
-
     def get_permissions(self):
         """Role-based permissions for vehicles"""
         if self.action in ["list", "retrieve"]:
@@ -466,8 +424,6 @@ class VehicleViewSet(BaseViewSet):
             return [IsAuthenticated()]  # Anyone can create vehicles
         elif self.action in ["update", "partial_update"]:
             return [IsAuthenticated(), IsCustomerOwnerOfObject()]
-        elif self.action == "customer_vehicles":
-            return [IsAuthenticated()]  # Customers can access their own vehicles
         else:
             return [IsAuthenticated(), IsOwnerOrEmployee()]
 
@@ -607,21 +563,13 @@ class AppointmentViewSet(BaseViewSet):
         if status:
             queryset = queryset.filter(status=status)
 
-        # Date range filtering - support both camelCase (frontend) and snake_case (backend) formats
-        date_from = self.request.query_params.get("dateFrom") or self.request.query_params.get("date_from")
-        date_to = self.request.query_params.get("dateTo") or self.request.query_params.get("date_to")
-        
+        # Date range filtering
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
         if date_from:
-            from django.utils.dateparse import parse_date
-            parsed_date = parse_date(date_from)
-            if parsed_date:
-                queryset = queryset.filter(date__date__gte=parsed_date)
-        
+            queryset = queryset.filter(date__gte=date_from)
         if date_to:
-            from django.utils.dateparse import parse_date
-            parsed_date = parse_date(date_to)
-            if parsed_date:
-                queryset = queryset.filter(date__date__lte=parsed_date)
+            queryset = queryset.filter(date__lte=date_to)
 
         return queryset.order_by("-date")
 
@@ -685,8 +633,6 @@ class AppointmentViewSet(BaseViewSet):
             return [IsAuthenticated()]
         elif self.action == "create":
             return [IsAuthenticated()]  # Anyone can create appointments
-        elif self.action == "customer_appointments":
-            return [IsAuthenticated()]  # Customers can access their own appointments
         else:
             return [IsAuthenticated(), IsOwnerOrEmployee()]
 
@@ -702,121 +648,6 @@ class AppointmentViewSet(BaseViewSet):
         )
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
-
-    @action(detail=False, methods=["get"], url_path="my-assignments")
-    def my_assignments(self, request):
-        """
-        Get appointments assigned to the authenticated user's employee record
-        Supports status filtering: ?status=scheduled,in_progress
-        """
-        try:
-            # Get the employee record for the authenticated user
-            employee = Employee.objects.get(user=request.user)
-            
-            # Filter appointments assigned to this technician
-            queryset = Appointment.objects.select_related(
-                'vehicle__customer', 'reported_problem'
-            ).filter(
-                assigned_technician=employee
-            )
-            
-            # Support status filtering
-            status_filter = request.query_params.get('status')
-            if status_filter:
-                # Handle comma-separated status values
-                status_list = [s.strip() for s in status_filter.split(',')]
-                queryset = queryset.filter(status__in=status_list)
-            
-            # Order by date
-            queryset = queryset.order_by('date')
-            
-            # Use AppointmentSerializer to ensure all technician fields are included
-            serializer = AppointmentSerializer(queryset, many=True)
-            
-            return Response({
-                'results': serializer.data,
-                'count': queryset.count()
-            })
-            
-        except Employee.DoesNotExist:
-            return Response(
-                {
-                    'error': 'No employee record found for this user',
-                    'detail': 'This user account is not linked to an employee record.'
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-    @action(detail=False, methods=["get"], url_path="customers/me/appointments")
-    def customer_appointments(self, request):
-        """
-        Get appointments for the authenticated customer user
-        Supports status and date range filtering: ?status=scheduled,in_progress&dateFrom=2023-01-01&dateTo=2023-12-31
-        """
-        # Ensure user has customer role
-        if not hasattr(request.user, 'role') or request.user.role != 'customer':
-            return Response(
-                {
-                    'error': 'Access denied',
-                    'detail': 'This endpoint is only accessible to customers.'
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-            
-        try:
-            # Get the customer record for the authenticated user
-            customer = Customer.objects.get(user=request.user)
-            
-            # Filter appointments for this customer's vehicles
-            queryset = Appointment.objects.select_related(
-                'vehicle', 'vehicle__customer', 'reported_problem', 'assigned_technician__user'
-            ).filter(
-                vehicle__customer=customer
-            )
-            
-            # Support status filtering
-            status_filter = request.query_params.get('status')
-            if status_filter:
-                status_list = [s.strip() for s in status_filter.split(',')]
-                queryset = queryset.filter(status__in=status_list)
-            
-            # Date range filtering
-            date_from = request.query_params.get("dateFrom") or request.query_params.get("date_from")
-            date_to = request.query_params.get("dateTo") or request.query_params.get("date_to")
-            
-            if date_from:
-                from django.utils.dateparse import parse_date
-                parsed_date = parse_date(date_from)
-                if parsed_date:
-                    queryset = queryset.filter(date__date__gte=parsed_date)
-            
-            if date_to:
-                from django.utils.dateparse import parse_date
-                parsed_date = parse_date(date_to)
-                if parsed_date:
-                    queryset = queryset.filter(date__date__lte=parsed_date)
-            
-            # Order by date (most recent first)
-            queryset = queryset.order_by('-date')
-            
-            # Use AppointmentSerializer with comprehensive data
-            serializer = AppointmentSerializer(queryset, many=True)
-            
-            return Response({
-                'results': serializer.data,
-                'count': queryset.count(),
-                'customer_id': customer.id,
-                'customer_name': customer.name
-            })
-            
-        except Customer.DoesNotExist:
-            return Response(
-                {
-                    'error': 'No customer record found for this user',
-                    'detail': 'This user account is not linked to a customer record. Please contact support.'
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
 
 
 # -------------------
@@ -1009,76 +840,12 @@ class RepairOrderViewSet(BaseViewSet):
 
         return Response(stats)
 
-    @action(detail=False, methods=["get"], url_path="customers/me/repair-orders")
-    def customer_repair_orders(self, request):
-        """
-        Get repair orders for the authenticated customer user
-        Supports status filtering: ?status=pending,in_progress,completed
-        """
-        # Ensure user has customer role
-        if not hasattr(request.user, 'role') or request.user.role != 'customer':
-            return Response(
-                {
-                    'error': 'Access denied',
-                    'detail': 'This endpoint is only accessible to customers.'
-                },
-                status=status.HTTP_403_FORBIDDEN
-            )
-            
-        try:
-            # Get the customer record for the authenticated user
-            customer = Customer.objects.get(user=request.user)
-            
-            # Filter repair orders for this customer's vehicles
-            queryset = RepairOrder.objects.select_related(
-                'vehicle', 'vehicle__customer'
-            ).prefetch_related(
-                'repair_order_services__service',
-                'repair_order_parts__part',
-                'vehicle__appointments'
-            ).filter(
-                vehicle__customer=customer
-            )
-            
-            # Support status filtering based on appointment status
-            status_filter = request.query_params.get('status')
-            if status_filter:
-                status_list = [s.strip() for s in status_filter.split(',')]
-                # Filter by most recent appointment status
-                queryset = queryset.filter(
-                    vehicle__appointments__status__in=status_list
-                ).distinct()
-            
-            # Order by date created (most recent first)
-            queryset = queryset.order_by('-date_created')
-            
-            # Use RepairOrderSerializer for comprehensive data
-            serializer = RepairOrderSerializer(queryset, many=True)
-            
-            return Response({
-                'results': serializer.data,
-                'count': queryset.count(),
-                'customer_id': customer.id,
-                'customer_name': customer.name
-            })
-            
-        except Customer.DoesNotExist:
-            return Response(
-                {
-                    'error': 'No customer record found for this user',
-                    'detail': 'This user account is not linked to a customer record. Please contact support.'
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
-
     def get_permissions(self):
         """Role-based permissions for repair orders"""
         if self.action in ["list", "retrieve"]:
             return [IsAuthenticated()]
         elif self.action == "create":
             return [IsAuthenticated(), CanCreateRepairOrders()]
-        elif self.action == "customer_repair_orders":
-            return [IsAuthenticated()]  # Customers can access their own repair orders
         else:
             return [IsAuthenticated(), CanCreateRepairOrders()]
 
@@ -1456,228 +1223,3 @@ def shop_stats(request):
     }
 
     return Response(stats)
-
-
-# ================================
-# TECHNICIAN ALLOCATION ENDPOINTS
-# ================================
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def assign_technician(request, appointment_id):
-    """
-    Assign a technician to an appointment
-    
-    POST /api/shop/appointments/{id}/assign-technician/
-    Body: {"technician_id": 5}
-    """
-    from django.shortcuts import get_object_or_404
-    from django.utils import timezone
-    
-    appointment = get_object_or_404(Appointment, id=appointment_id)
-    technician_id = request.data.get('technician_id')
-    
-    if not technician_id:
-        return Response(
-            {'error': 'technician_id is required'}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    technician = get_object_or_404(Employee, id=technician_id)
-    
-    # Check if technician is available
-    if not technician.is_available:
-        return Response({
-            'error': f'Technician {technician.name} is not available',
-            'current_workload': technician.workload_count,
-            'max_workload': 3
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Assign the technician
-    appointment.assign_technician(technician)
-    
-    # Return updated appointment data
-    serializer = AppointmentSerializer(appointment)
-    
-    return Response({
-        'message': 'Technician assigned successfully',
-        'appointment': serializer.data,
-        'technician': {
-            'id': technician.id,
-            'name': technician.name,
-            'role': technician.role
-        },
-        'assignment_details': {
-            'assigned_at': appointment.assigned_at,
-            'status': appointment.status,
-            'previous_status': 'pending'
-        }
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def start_work(request, appointment_id):
-    """
-    Mark appointment work as started (status: assigned → in_progress)
-    
-    POST /api/shop/appointments/{id}/start-work/
-    """
-    from django.shortcuts import get_object_or_404
-    
-    appointment = get_object_or_404(Appointment, id=appointment_id)
-    
-    if not appointment.assigned_technician:
-        return Response({
-            'error': 'No technician assigned to this appointment'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    if appointment.status != 'assigned':
-        return Response({
-            'error': f'Cannot start work. Current status: {appointment.status}',
-            'valid_status_for_start': 'assigned'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Start the work
-    previous_status = appointment.status
-    appointment.start_work()
-    
-    serializer = AppointmentSerializer(appointment)
-    
-    return Response({
-        'message': 'Work started successfully',
-        'appointment': serializer.data,
-        'work_details': {
-            'started_at': appointment.started_at,
-            'status': appointment.status,
-            'previous_status': previous_status,
-            'technician': appointment.assigned_technician.name
-        }
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def complete_work(request, appointment_id):
-    """
-    Mark appointment work as completed (status: in_progress → completed)
-    
-    POST /api/shop/appointments/{id}/complete-work/
-    """
-    from django.shortcuts import get_object_or_404
-    
-    appointment = get_object_or_404(Appointment, id=appointment_id)
-    
-    if appointment.status != 'in_progress':
-        return Response({
-            'error': f'Cannot complete work. Current status: {appointment.status}',
-            'valid_status_for_completion': 'in_progress'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Complete the work
-    previous_status = appointment.status
-    appointment.complete_work()
-    
-    serializer = AppointmentSerializer(appointment)
-    
-    return Response({
-        'message': 'Work completed successfully',
-        'appointment': serializer.data,
-        'completion_details': {
-            'completed_at': appointment.completed_at,
-            'status': appointment.status,
-            'previous_status': previous_status,
-            'technician': appointment.assigned_technician.name,
-            'total_work_time': str(appointment.completed_at - appointment.started_at) if appointment.started_at else None
-        }
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def technician_workload(request):
-    """
-    Get workload information for all technicians
-    
-    GET /api/shop/technicians/workload/
-    """
-    technicians = Employee.objects.filter(
-        role__icontains='technician'
-    ).select_related('shop')
-    
-    workload_data = []
-    
-    for tech in technicians:
-        current_appointments = tech.current_appointments
-        today_appointments = tech.appointments_today
-        
-        workload_data.append({
-            'technician': {
-                'id': tech.id,
-                'name': tech.name,
-                'role': tech.role,
-                'shop': tech.shop.name
-            },
-            'workload': {
-                'current_appointments': tech.workload_count,
-                'is_available': tech.is_available,
-                'appointments_today': today_appointments.count(),
-                'max_capacity': 3
-            },
-            'current_jobs': [
-                {
-                    'appointment_id': apt.id,
-                    'vehicle': f"{apt.vehicle.make} {apt.vehicle.model}",
-                    'customer': apt.vehicle.customer.name,
-                    'status': apt.status,
-                    'assigned_at': apt.assigned_at,
-                    'started_at': apt.started_at
-                } for apt in current_appointments
-            ]
-        })
-    
-    # Summary statistics
-    total_technicians = len(workload_data)
-    available_technicians = len([t for t in workload_data if t['workload']['is_available']])
-    busy_technicians = total_technicians - available_technicians
-    
-    return Response({
-        'summary': {
-            'total_technicians': total_technicians,
-            'available_technicians': available_technicians,
-            'busy_technicians': busy_technicians,
-            'utilization_rate': f"{(busy_technicians/total_technicians*100):.1f}%" if total_technicians > 0 else "0%"
-        },
-        'technicians': workload_data
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def available_technicians(request):
-    """
-    Get list of available technicians for assignment
-    
-    GET /api/shop/technicians/available/
-    """
-    available_techs = Employee.objects.filter(
-        role__icontains='technician'
-    ).select_related('shop')
-    
-    available_list = []
-    
-    for tech in available_techs:
-        if tech.is_available:
-            available_list.append({
-                'id': tech.id,
-                'name': tech.name,
-                'role': tech.role,
-                'current_workload': tech.workload_count,
-                'max_capacity': 3,
-                'appointments_today': tech.appointments_today.count()
-            })
-    
-    return Response({
-        'message': f'Found {len(available_list)} available technicians',
-        'available_technicians': available_list
-    }, status=status.HTTP_200_OK)
