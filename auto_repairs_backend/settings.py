@@ -2,6 +2,8 @@ from pathlib import Path
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
+import socket
+from dotenv import load_dotenv
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -12,15 +14,28 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 AUTH_USER_MODEL = "auto_repairs_backend.User"
 
 # ====== Environment Detection ======
-ENVIRONMENT = os.getenv("ENV_NAME", "development")
+ENVIRONMENT = os.getenv("ENV_NAME")  # explicit ENV_NAME has highest priority
 
-# Load environment variables
+if not ENVIRONMENT:
+    hostname = socket.gethostname().lower()
+
+    if (
+        "server" in hostname
+        or "prod" in hostname
+        or BASE_DIR.as_posix().startswith("/var/www")
+    ):
+        ENVIRONMENT = "production"
+    else:
+        ENVIRONMENT = "development"
+
+# Load environment file
 dotenv_path = BASE_DIR / f".env.{ENVIRONMENT}"
-load_dotenv(dotenv_path)
-print(f"[INFO] Environment: {ENVIRONMENT} — loaded {dotenv_path}")
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
+else:
+    print(f"[WARN] No .env file found for {ENVIRONMENT} at {dotenv_path}")
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
+print(f"[INFO] Environment detected: {ENVIRONMENT} — loaded {dotenv_path}")
 
 # ====== Core Settings ======
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -31,7 +46,6 @@ ALLOWED_HOSTS = (
 
 
 # Application definition
-
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -163,7 +177,10 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
