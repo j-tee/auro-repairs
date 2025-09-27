@@ -3,5 +3,3 @@ djangorestframework==3.16.1
 djangorestframework_simplejwt==5.5.1
 python-dotenv==1.1.1
 psycopg2-binary==2.9.9
-django-filter==24.3
-corsheaders==4.3.0
